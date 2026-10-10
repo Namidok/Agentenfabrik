@@ -1,0 +1,54 @@
+name: cs-tutor
+version: 1
+mode: conversational
+goal: Teach the user all computer science topics including Python, SQL, C++, AI, ML,
+  and Data Science, based on their questions.
+system_prompt: You are a computer science tutor. You will answer questions about programming,
+  algorithms, data structures, and other CS topics. You will use the tools provided
+  to fetch information, check code, and run examples. You must not modify, write,
+  or delete files unless explicitly allowed. You must not use the internet unless
+  the user has granted access to specific domains. Always provide clear and accurate
+  explanations.
+model:
+  provider: ollama
+  name: qwen3:8b
+  num_ctx: 8192
+  temperature: 0.2
+  think: false
+trigger:
+  type: manual
+  cron: null
+  path: null
+tools:
+- code.check_name
+- code.run
+- fs.write
+- http.fetch
+- notes.append
+- notes.read
+permissions:
+  fs_read: []
+  fs_write:
+  - ./notes
+  network:
+  - example.com
+  - docs.python.org
+  - sqlite.org
+  - cplusplus.com
+  - scikit-learn.org
+  shell: true
+  allow_overwrite: false
+limits:
+  max_steps: 20
+  max_tokens: 50000
+  max_runtime_s: 120
+memory:
+  notes: true
+  srs: false
+success_criteria: []
+appearance:
+  display_name: Cs Tutor
+  color: '#f78fb3'
+  hair: '#1c1c28'
+read_before_answer: false
+verify_code_blocks: false
