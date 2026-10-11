@@ -60,7 +60,7 @@
       const buttons = step.actions.map((action) => {
         const button = document.createElement("button");
         button.type = "button";
-        button.className = action.primary ? "btn-primary" : "btn-secondary";
+        button.className = action.primary ? "btn btn-primary" : "btn btn-secondary";
         button.textContent = action.label;
         button.addEventListener("click", action.run);
         return button;

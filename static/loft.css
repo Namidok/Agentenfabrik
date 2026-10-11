@@ -1,0 +1,164 @@
+/* The full-screen office shell: where things sit on screen. Loaded after style.css (the pixel kit).
+   The office fills the window; the crew list and the activity log slide in from the left, the chat
+   floats on the right, a HUD runs along the top and a dock along the bottom. */
+
+html, body { height: 100%; overflow: hidden; }
+
+/* ---------- the office fills the window ---------- */
+
+.app { display: block; height: 100dvh; }
+.col-main { position: fixed; inset: 0; }
+.office-panel {
+  position: absolute; inset: 0; overflow: hidden;
+  /* the room carries on past the edges of the picture: wall above the skirting, floor below */
+  background:
+    linear-gradient(var(--world-trim, #6a4c2e) 0 0) 0 var(--wall-edge, 40%) / 100% 4px no-repeat,
+    linear-gradient(to bottom, var(--world-wall, var(--bg)) 0 var(--wall-edge, 40%), var(--world-floor, var(--bg)) var(--wall-edge, 40%));
+}
+/* with a chat open the picture moves left; the room behind it keeps going under the chat */
+.office-stage { position: absolute; inset: 0; transition: right 0.28s steps(7); }
+.col-main.has-chat .office-stage { right: calc(min(31rem, 46vw - 12px) + 12px); }
+.office-scroll { position: absolute; inset: 0; }
+.office-scroll > canvas { position: absolute; inset: 0; margin: auto; display: block; touch-action: pan-x; }
+.office-scroll > canvas:focus-visible { outline: var(--px) solid var(--focus); outline-offset: calc(-1 * var(--px)); }
+/* phones: the room is taller than the screen is wide, so it scrolls sideways */
+.office-scroll.pan { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain; }
+.office-scroll.pan::-webkit-scrollbar { display: none; }
+.office-scroll.pan > canvas { position: relative; inset: auto; margin: 0; top: var(--pan-top, 0); }
+
+/* hover card for agents and objects in the office */
+.office-tip {
+  position: absolute; left: 0; top: 0; z-index: 6; pointer-events: none; display: grid; gap: 3px;
+  max-width: 17rem; padding: 8px 10px; background: var(--panel); color: var(--ink-2); font-size: var(--t-xs);
+  box-shadow: 0 calc(-1 * var(--px)) 0 0 var(--edge), 0 var(--px) 0 0 var(--edge), calc(-1 * var(--px)) 0 0 0 var(--edge), var(--px) 0 0 0 var(--edge), 4px 6px 0 0 var(--shadow);
+}
+.office-tip strong { color: var(--ink); font: 14px/1.2 var(--pixel); text-transform: uppercase; -webkit-font-smoothing: none; margin-bottom: 3px; }
+.office-tip .tip-state { color: var(--ink); }
+
+.office-hint {
+  position: absolute; z-index: 4; left: 50%; bottom: 92px; transform: translateX(-50%); margin: 0; pointer-events: none; white-space: nowrap;
+  padding: 6px 10px; background: color-mix(in srgb, var(--panel) 92%, transparent); color: var(--ink-2);
+  font: 14px/1 var(--pixel); text-transform: uppercase; -webkit-font-smoothing: none;
+  box-shadow: 0 0 0 var(--px) var(--edge), 3px 4px 0 0 var(--shadow);
+}
+.col-main.has-chat .office-hint, .office-stage.nova-open .office-hint, .office-stage.is-empty .office-hint { display: none; }
+.office-stage.nova-open .office-empty { display: none; } /* Nova speaks first, then the empty office asks */
+
+/* nobody hired yet */
+.office-empty {
+  position: absolute; z-index: 5; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(26rem, calc(100% - 32px)); display: grid; justify-items: center; gap: 12px; padding: 22px 20px 20px; text-align: center;
+}
+.office-empty .avatar { --accent: #2ec4a0; width: 72px; height: 72px; padding: 6px; }
+.office-empty p { margin: 0; color: var(--ink-2); font-size: var(--t-sm); }
+.office-empty .row { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 4px; padding: 2px; }
+
+/* Nova's speech card */
+.nova-card {
+  --accent: #23a888;
+  position: absolute; z-index: 7; left: 50%; bottom: 96px; transform: translateX(-50%);
+  width: min(38rem, calc(100% - 32px)); display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: start;
+  padding: 14px 10px 14px 14px;
+}
+.nova-card .avatar { width: 60px; height: 60px; padding: 5px; }
+.nova-body h3 { display: flex; align-items: baseline; gap: 10px; font: 14px/1 var(--pixel); text-transform: uppercase; -webkit-font-smoothing: none; color: var(--ink); }
+.nova-body h3 span { color: var(--ink-2); }
+.nova-body p { margin: 8px 0 12px; min-height: 2.9em; font-size: var(--t-md); line-height: 1.45; overflow-wrap: anywhere; }
+.nova-actions { display: flex; flex-wrap: wrap; gap: 12px; padding: 2px; }
+.nova-actions:empty { display: none; }
+
+/* ---------- top bar ---------- */
+
+.hud { position: fixed; z-index: 30; left: 12px; right: 12px; top: 12px; display: flex; gap: 12px; align-items: center; pointer-events: none; }
+.hud > * { pointer-events: auto; }
+.hud-chip {
+  display: inline-flex; align-items: center; gap: 10px; min-height: 36px; margin: 0; padding: 0 12px; border: 0;
+  background: var(--panel); color: var(--ink);
+  box-shadow: inset var(--px) var(--px) 0 0 var(--hi), inset calc(-1 * var(--px)) calc(-1 * var(--px)) 0 0 var(--lo),
+    0 calc(-1 * var(--px)) 0 0 var(--edge), 0 var(--px) 0 0 var(--edge), calc(-1 * var(--px)) 0 0 0 var(--edge), var(--px) 0 0 0 var(--edge), 2px 3px 0 0 var(--shadow);
+}
+.hud-chip dt { color: var(--ink-2); }
+.hud-chip dd { margin: 0; }
+.hud-chip .pill { display: inline-flex; align-items: center; gap: 8px; border: 0; padding: 0; background: none; color: inherit; font: inherit; text-transform: inherit; }
+.hud-chip .pill::before { content: ""; width: 8px; height: 8px; background: var(--ink-2); box-shadow: 0 0 0 var(--px) var(--edge); }
+.hud-chip .pill.is-ok::before { background: var(--ok); }
+.hud-chip .pill.is-bad { color: var(--bad); }
+.hud-chip .pill.is-bad::before { background: var(--bad); animation: blink 1s steps(2) infinite; }
+.hud-spacer { flex: 1; }
+button.hud-chip { cursor: pointer; }
+button.hud-chip:hover { background: var(--panel-2); }
+button.hud-chip:active { transform: translateY(var(--px)); }
+.time-chip small { color: var(--ink-2); font: inherit; }
+.hud-chip .ico { --ico-size: 24px; margin: 0 -4px; }
+.help-chip { width: 36px; justify-content: center; padding: 0; }
+
+/* ---------- dock ---------- */
+
+.dock {
+  position: fixed; z-index: 30; left: 50%; bottom: 14px; transform: translateX(-50%);
+  display: flex; align-items: stretch; gap: 4px; padding: 6px; background: var(--panel);
+  box-shadow: inset var(--px) var(--px) 0 0 var(--hi), inset calc(-1 * var(--px)) calc(-1 * var(--px)) 0 0 var(--lo),
+    0 calc(-1 * var(--px)) 0 0 var(--edge), 0 var(--px) 0 0 var(--edge), calc(-1 * var(--px)) 0 0 0 var(--edge), var(--px) 0 0 0 var(--edge), 2px 3px 0 0 var(--shadow);
+}
+.dock button {
+  position: relative; display: grid; justify-items: center; align-content: center; gap: 6px; min-width: 70px; min-height: 56px; padding: 6px 8px;
+  border: 0; background: none; color: var(--ink-2);
+}
+.dock button .ico { --ico-size: 24px; }
+.dock button:hover { background: var(--panel-2); color: var(--ink); }
+.dock button:active { transform: translateY(var(--px)); }
+.dock button[aria-expanded="true"] { background: var(--panel-2); color: var(--ink); box-shadow: inset 0 calc(-2 * var(--px)) 0 0 var(--accent); }
+.dock button:focus-visible { outline-offset: calc(-1 * var(--px)); }
+.dock button.ping::after { content: ""; position: absolute; right: 14px; top: 6px; width: 8px; height: 8px; background: var(--bad); box-shadow: 0 0 0 var(--px) var(--panel); }
+.dock .sep { width: var(--px); margin: 6px 4px; background: var(--line); }
+
+/* ---------- slide-over sheets (crew, activity) ---------- */
+
+.sheet {
+  position: fixed; z-index: 25; left: 12px; top: 64px; bottom: 96px; width: min(23rem, calc(100vw - 24px));
+  display: flex; flex-direction: column; padding: 0 8px 8px; transform: translateX(calc(-100% - 24px)); visibility: hidden;
+  transition: transform 0.24s steps(6), visibility 0s 0.24s;
+}
+.sheet.open { transform: none; visibility: visible; transition: transform 0.24s steps(6), visibility 0s; }
+.sheet-bar { display: flex; align-items: center; gap: 8px; min-height: 48px; margin: 0 -8px 12px; padding: 0 6px 0 14px; background: var(--panel-2); box-shadow: inset 0 calc(-1 * var(--px)) 0 0 var(--line); flex: none; }
+.sheet-bar > .ico { color: var(--accent); }
+.sheet-title { flex: 1; min-width: 0; }
+.sheet-title .count { color: var(--ink-2); }
+.sheet-sub { margin: -2px 4px 12px; color: var(--ink-2); font-size: var(--t-xs); flex: none; }
+
+/* ---------- floating chat ---------- */
+
+.chat {
+  position: absolute; right: 12px; top: 64px; bottom: 96px; width: min(31rem, calc(46vw - 12px)); min-height: 0;
+  display: flex; flex-direction: column; animation: chat-in 0.22s steps(5);
+}
+.chat-live { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+@keyframes chat-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* ---------- smaller screens ---------- */
+
+@media (max-width: 1180px) { #chat-sub { display: none; } }
+@media (max-width: 900px) {
+  .col-main.has-chat .office-stage { right: 0; }
+  .chat { left: 12px; width: auto; z-index: 28; }
+  .office-hint { display: none; }
+  .dock button { min-width: 56px; }
+}
+@media (max-width: 560px) {
+  .hud { left: 8px; right: 8px; top: 8px; gap: 8px; }
+  .hud-chip { padding: 0 10px; gap: 8px; }
+  .hud-chip dt, .time-chip small { display: none; }
+  .dock { bottom: 8px; padding: 4px; gap: 2px; }
+  .dock button { min-width: 48px; min-height: 48px; padding: 4px; }
+  .dock button span { display: none; }
+  .sheet { left: 8px; right: 8px; width: auto; top: 54px; bottom: 74px; }
+  .chat { left: 8px; right: 8px; top: 54px; bottom: 74px; }
+  #chat-sub { display: none; }
+  .nova-card { bottom: 74px; grid-template-columns: minmax(0, 1fr) auto; }
+  .nova-card .avatar { display: none; }
+}
+@media (max-height: 560px) {
+  .sheet, .chat { top: 56px; bottom: 76px; }
+  .dock button span { display: none; }
+  .dock button { min-height: 44px; }
+}

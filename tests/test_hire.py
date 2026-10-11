@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from factory import server
+from factory.scheduler import ModelScheduler
 from factory.llm import LLMResponse, MockProvider, ProviderError
 
 HEADERS = {"x-agentfactory": "1"}
@@ -28,7 +29,9 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "SPECS_DIR", tmp_path / "specs")
     monkeypatch.setattr(server, "STATIC_DIR", tmp_path / "static")
     monkeypatch.setattr(server, "ollama_models", lambda: ["qwen3:8b"])
-    monkeypatch.setattr(server, "MODEL_LOCK", asyncio.Lock())
+    monkeypatch.setattr(server, "SCHEDULER", ModelScheduler(1))
+    monkeypatch.setattr(server, "loaded_models", lambda host=None: None)  # never call the real Ollama
+    monkeypatch.setattr(server, "warm_up", lambda configs: None)
     return tmp_path
 
 

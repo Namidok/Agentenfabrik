@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from factory import server
+from factory.scheduler import ModelScheduler
 from factory.llm import LLMProvider, LLMResponse, MockProvider, ToolCall
 
 CHAT_SPEC = """name: demo-agent
@@ -41,7 +42,9 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "SPECS_DIR", tmp_path / "specs")
     monkeypatch.setattr(server, "STATIC_DIR", tmp_path / "static")
     monkeypatch.setattr(server, "ollama_models", lambda: ["qwen3:8b"])
-    monkeypatch.setattr(server, "MODEL_LOCK", asyncio.Lock())
+    monkeypatch.setattr(server, "SCHEDULER", ModelScheduler(1))
+    monkeypatch.setattr(server, "loaded_models", lambda host=None: None)  # never call the real Ollama
+    monkeypatch.setattr(server, "warm_up", lambda configs: None)
     return tmp_path
 
 
@@ -279,3 +282,231 @@ def test_provider_failure_is_reported_not_a_crash(client, monkeypatch):
         msg = ws.receive_json()
         assert msg["event"] == "error" and msg["payload"]["fatal"] is True
         assert "No model backend" in msg["payload"]["message"]
+
+
+class BlockThenTool(LLMProvider):
+    """First call: waits for the test, then asks for a tool (so the turn would go on). Later calls answer."""
+
+    def __init__(self, started: threading.Event, release: threading.Event):
+        self.started, self.release, self.calls = started, release, 0
+
+    def chat(self, messages, tools=None, schema=None):
+        self.calls += 1
+        if self.calls == 1:
+            self.started.set()
+            assert self.release.wait(10), "test never released the model"
+            return use("fs_list", path="./sandbox")
+        return say("back again")
+
+
+def test_stop_ends_the_turn_after_the_current_step_and_the_chat_goes_on(client, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+    provider = BlockThenTool(started, release)
+    monkeypatch.setattr(server, "make_provider", lambda cfg: provider)
+    with client.websocket_connect("ws://127.0.0.1/ws/chat/demo-agent") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "message", "text": "list the files"})
+        assert ws.receive_json()["event"] == "started"
+        assert started.wait(5)
+        ws.send_json({"type": "stop"})
+        ws.send_json({"type": "message", "text": "too early"})  # refused while the turn runs
+        release.set()
+        events = []
+        while not events or events[-1]["event"] != "reply":
+            events.append(ws.receive_json())
+        reply = events[-1]["payload"]
+        assert reply["stop_reason"] == "stopped" and reply["ok"] is False
+        assert "stopped me" in reply["text"]
+        assert any(e["event"] == "error" and "still working" in e["payload"]["message"] for e in events)
+        assert provider.calls == 1  # the tool ran, but no further model call was made
+        assert talk(ws, "hello again")[-1]["payload"]["text"] == "back again"
+
+
+def test_stop_without_a_running_turn_is_ignored(client, monkeypatch):
+    script(monkeypatch, say("hi"))
+    with client.websocket_connect("ws://127.0.0.1/ws/chat/demo-agent") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "stop"})
+        assert talk(ws, "hello")[-1]["payload"]["text"] == "hi"
+
+
+CARD_SPEC = """name: card-agent
+goal: "An agent with a flashcard box"
+tools: [srs.add, srs.due]
+memory: {srs: true}
+"""
+
+
+def test_cards_endpoint_lists_the_box_and_refuses_agents_without_one(client, world):
+    from factory import srs
+    from factory.tools import ToolContext
+    (world / "specs" / "cards.yaml").write_text(CARD_SPEC)
+    assert client.get("/api/agents/card-agent/cards").json()["cards"] == []
+    spec = server.find_spec("card-agent")
+    srs.srs_add(ToolContext(spec, world), {"front": "the dog", "back": "der Hund"})
+    data = client.get("/api/agents/card-agent/cards").json()
+    assert data["total"] == 1 and data["cards"][0]["back"] == "der Hund"
+    assert client.get("/api/agents/demo-agent/cards").status_code == 404
+
+
+# ---------- settings: per-agent model and parallel agents ----------
+
+LIGHT_SPEC = """name: light-agent
+goal: "A light agent on a small model"
+model:
+  name: llama3.2
+"""
+
+
+def test_agents_report_their_real_model_and_where_it_comes_from(client, world, monkeypatch):
+    from factory.settings import Settings
+    monkeypatch.setattr(server, "SETTINGS", Settings(default_model="qwen3:4b-instruct"))
+    (world / "specs" / "light.yaml").write_text(LIGHT_SPEC)
+    agents = {a["name"]: a for a in client.get("/api/agents").json()["agents"]}
+    assert (agents["demo-agent"]["model"], agents["demo-agent"]["model_source"]) == ("qwen3:4b-instruct", "default")
+    assert (agents["light-agent"]["model"], agents["light-agent"]["model_source"]) == ("llama3.2", "spec")
+    assert agents["light-agent"]["model_installed"] is False  # only qwen3:8b is installed in this world
+    assert agents["demo-agent"]["model_installed"] is False
+
+
+def test_a_chat_runs_on_the_agents_own_model(client, world, monkeypatch):
+    (world / "specs" / "light.yaml").write_text(LIGHT_SPEC)
+    asked = []
+    monkeypatch.setattr(server, "make_provider", lambda cfg: asked.append(cfg.name) or MockProvider([say("hi")]))
+    with client.websocket_connect("ws://127.0.0.1/ws/chat/light-agent") as ws:
+        ws.receive_json()
+        assert talk(ws, "hello")[-1]["payload"]["text"] == "hi"
+    assert asked and set(asked) == {"llama3.2"}  # a task agent starts a session per message, each on its own model
+
+
+def test_config_reports_the_settings(client, monkeypatch):
+    from factory.settings import Settings
+    monkeypatch.setattr(server, "SETTINGS", Settings(max_parallel=2))
+    data = client.get("/api/config").json()
+    assert data["max_parallel"] == 2 and data["default_model"] == "qwen3:8b" and data["settings_error"] == ""
+
+
+def test_with_two_slots_two_agents_think_at_once_and_a_third_waits(client, world, monkeypatch):
+    monkeypatch.setattr(server, "SCHEDULER", ModelScheduler(2))
+    started = [threading.Event(), threading.Event()]
+    release = threading.Event()
+    providers = iter([Blocking(started[0], release), Blocking(started[1], release), MockProvider([say("third")])])
+    monkeypatch.setattr(server, "make_provider", lambda cfg: next(providers))
+    url = "ws://127.0.0.1/ws/chat/demo-agent"
+    with client.websocket_connect(url) as one, client.websocket_connect(url) as two, client.websocket_connect(url) as three:
+        for ws in (one, two, three):
+            ws.receive_json()
+        one.send_json({"type": "message", "text": "a"})
+        assert one.receive_json()["event"] == "started"
+        two.send_json({"type": "message", "text": "b"})
+        assert two.receive_json()["event"] == "started"  # no queue for the second agent
+        assert started[0].wait(5) and started[1].wait(5)  # both are inside the model at the same time
+        three.send_json({"type": "message", "text": "c"})
+        assert three.receive_json()["event"] == "queued"  # the third waits for a free slot
+        release.set()
+        for ws in (one, two):
+            while ws.receive_json()["event"] != "reply":
+                pass
+        events = []
+        while not events or events[-1]["event"] != "reply":
+            events.append(three.receive_json())
+        assert events[0]["event"] == "started" and events[-1]["payload"]["text"] == "third"
+
+
+def test_stop_works_per_agent_while_two_think_at_once(client, world, monkeypatch):
+    monkeypatch.setattr(server, "SCHEDULER", ModelScheduler(2))
+    started = [threading.Event(), threading.Event()]
+    release = threading.Event()
+    stopped, kept = BlockThenTool(started[0], release), BlockThenTool(started[1], release)
+    providers = iter([stopped, kept])
+    monkeypatch.setattr(server, "make_provider", lambda cfg: next(providers))
+    url = "ws://127.0.0.1/ws/chat/demo-agent"
+    with client.websocket_connect(url) as one, client.websocket_connect(url) as two:
+        for ws in (one, two):
+            ws.receive_json()
+        one.send_json({"type": "message", "text": "a"})
+        two.send_json({"type": "message", "text": "b"})
+        assert started[0].wait(5) and started[1].wait(5)
+        one.send_json({"type": "stop"})
+        release.set()
+        replies = {}
+        for name, ws in (("one", one), ("two", two)):
+            msg = ws.receive_json()
+            while msg["event"] != "reply":
+                msg = ws.receive_json()
+            replies[name] = msg["payload"]
+        assert replies["one"]["stop_reason"] == "stopped" and stopped.calls == 1
+        assert replies["two"]["stop_reason"] == "done" and replies["two"]["text"] == "back again" and kept.calls == 2
+
+
+def test_waiting_agents_are_told_their_place_and_a_stop_while_waiting_leaves_the_line(client, world, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+    providers = iter([Blocking(started, release), MockProvider([say("never")]), MockProvider([say("third")])])
+    monkeypatch.setattr(server, "make_provider", lambda cfg: next(providers))
+    url = "ws://127.0.0.1/ws/chat/demo-agent"
+    with client.websocket_connect(url) as one, client.websocket_connect(url) as two, client.websocket_connect(url) as three:
+        for ws in (one, two, three):
+            ws.receive_json()
+        one.send_json({"type": "message", "text": "a"})
+        assert one.receive_json()["event"] == "started" and started.wait(5)
+        two.send_json({"type": "message", "text": "b"})
+        assert two.receive_json() == {"event": "queued", "payload": {"position": 1, "reason": "slots"}}
+        three.send_json({"type": "message", "text": "c"})
+        assert three.receive_json()["payload"]["position"] == 2
+        two.send_json({"type": "stop"})
+        reply = two.receive_json()
+        assert reply["event"] == "reply" and reply["payload"]["stop_reason"] == "stopped" and reply["payload"]["steps"] == 0
+        assert three.receive_json()["payload"]["position"] == 1  # moved up
+        release.set()
+        while one.receive_json()["event"] != "reply":
+            pass
+        events = []
+        while not events or events[-1]["event"] != "reply":
+            events.append(three.receive_json())
+        assert events[-1]["payload"]["text"] == "third"
+
+
+def test_a_failing_agent_does_not_block_the_next_one(client, world, monkeypatch):
+    from factory.llm import ProviderError
+
+    class Broken(LLMProvider):
+        def chat(self, messages, tools=None, schema=None):
+            raise ProviderError("Ollama returned 500")
+    providers = iter([Broken(), MockProvider([say("fine")])])
+    monkeypatch.setattr(server, "make_provider", lambda cfg: next(providers))
+    url = "ws://127.0.0.1/ws/chat/demo-agent"
+    with client.websocket_connect(url) as one, client.websocket_connect(url) as two:
+        one.receive_json(), two.receive_json()
+        assert talk(one, "a")[-1]["payload"]["ok"] is False
+        assert talk(two, "b")[-1]["payload"]["text"] == "fine"
+    assert server.SCHEDULER.running == 0
+
+
+def test_a_cold_model_is_announced_as_loading_before_thinking(client, monkeypatch):
+    script(monkeypatch, say("hi"))
+    monkeypatch.setattr(server, "loaded_models", lambda host=None: {"qwen3:8b": 4096})  # loaded, but another size
+    with client.websocket_connect("ws://127.0.0.1/ws/chat/demo-agent") as ws:
+        ws.receive_json()
+        events = [e["event"] for e in talk(ws, "hello")]
+    assert events[:2] == ["loading", "started"]
+    monkeypatch.setattr(server, "loaded_models", lambda host=None: {"qwen3:8b": 8192})
+    with client.websocket_connect("ws://127.0.0.1/ws/chat/demo-agent") as ws:
+        ws.receive_json()
+        assert talk(ws, "hello")[0]["event"] == "started"
+
+
+def test_replies_stream_over_the_websocket(client, monkeypatch):
+    script(monkeypatch, say("Hello there, this streams."))
+    with client.websocket_connect("ws://127.0.0.1/ws/chat/demo-agent") as ws:
+        ws.receive_json()
+        events = talk(ws, "hello")
+    deltas = [e["payload"]["text"] for e in events if e["event"] == "trace" and e["payload"]["event"] == "delta"]
+    assert "".join(deltas) == "Hello there, this streams." and events[-1]["payload"]["text"] == "Hello there, this streams."
+
+
+def test_hiring_warms_the_new_agents_model(client, world, monkeypatch):
+    warmed = []
+    monkeypatch.setattr(server, "warm_up", lambda configs: warmed.extend(c.name for c in configs))
+    form = {"name": "warm-agent", "goal": "Say hello to people nicely", "mode": "conversational"}
+    assert client.post("/api/hire", json=form, headers={"X-AgentFactory": "1"}).status_code == 200
+    assert warmed == ["qwen3:8b"]

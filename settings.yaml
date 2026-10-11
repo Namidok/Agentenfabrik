@@ -1,0 +1,24 @@
+# AgentFactory settings. Restart serve.py after changing this file.
+
+# The model an agent uses when its spec does not name one under model.name.
+# An agent can still pick its own, for example a small fast model for a light job:
+#   model:
+#     name: qwen3:4b-instruct
+default_model: qwen3:8b
+
+# How many agents may think at the same time: 1, 2 or 3. Others wait in a visible line.
+# The environment variable AGENTFACTORY_MAX_PARALLEL overrides this value.
+#
+# This only helps if Ollama also answers several requests at once. Ollama decides that itself, so
+# start it with the same number (or higher). See docs/PERFORMANCE.md for the exact commands.
+#
+# Memory on a 16 GB Mac: every parallel slot keeps its own context in memory.
+# qwen3:8b needs about 5.2 GB, plus about 0.6 GB per slot at num_ctx 8192 with OLLAMA_KV_CACHE_TYPE=q8_0
+# (1.2 GB without it). macOS, the browser and other apps need the rest, so 2 is a sensible maximum;
+# with 3 the Mac may start swapping and every agent gets slower, not faster. Agents on different
+# models wait for each other instead of making Ollama swap models in and out.
+max_parallel: 2
+
+# How long Ollama keeps a model in memory after its last request ("30m", "2h", "-1" = forever).
+# Longer means no slow reload after a coffee break, but the memory stays taken.
+keep_alive: 30m

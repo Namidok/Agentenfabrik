@@ -295,3 +295,20 @@ def build_tools(spec: AgentSpec) -> dict[str, Tool]:
     if missing:
         raise NotImplementedError(f"Tools not implemented yet: {', '.join(missing)}")
     return {IMPLEMENTED[t].model_name: IMPLEMENTED[t] for t in spec.tools}
+
+
+# Flashcard tools (spaced repetition); their logic lives in factory/srs.py.
+from factory import srs as _srs  # noqa: E402
+
+for _tool_id, (_description, _parameters, _func) in _srs.TOOLS.items():
+    IMPLEMENTED[_tool_id] = Tool(_tool_id, _description, _parameters, _func)
+
+if "notes.read" not in IMPLEMENTED:
+    def _notes_read(ctx, args):
+        path = ctx.base_dir / "data" / ctx.spec.name / "notes.md"
+        if not path.is_file():
+            return "(no notes saved yet)"
+        return path.read_text(encoding="utf-8")[-6000:] or "(no notes saved yet)"
+
+    IMPLEMENTED["notes.read"] = Tool("notes.read", "Read the notes saved in earlier chats.",
+                                     {"type": "object", "properties": {}}, _notes_read)

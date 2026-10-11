@@ -185,7 +185,7 @@
   function setBusy(on, label) {
     busy = on;
     for (const id of ["hire-review-btn", "hire-approve", "hire-back"]) $(id).disabled = on;
-    $("hire-approve").textContent = on && label ? label : "Approve and hire";
+    $("hire-approve").replaceChildren(window.Icons ? Icons.el(on ? "queue" : "check") : "", on && label ? label : "Approve and hire");
   }
 
   async function review() {

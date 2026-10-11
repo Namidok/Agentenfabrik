@@ -148,3 +148,81 @@ def test_make_provider_uses_spec_values():
 def test_make_provider_passes_the_think_setting():
     assert make_provider(ModelConfig(think=True)).think is True
     assert make_provider(ModelConfig()).think is False
+
+
+# ---------- streaming, Stop while writing, options ----------
+
+from factory.llm import ProviderCancelled, is_loaded, warm  # noqa: E402
+
+
+def ndjson(*chunks) -> httpx.Response:
+    return httpx.Response(200, content="\n".join(json.dumps(c) for c in chunks).encode())
+
+
+def test_streaming_hands_out_pieces_and_collects_tool_calls_and_timings():
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return ndjson(
+            {"message": {"content": "Hal"}},
+            {"message": {"content": "lo"}},
+            {"message": {"content": "", "tool_calls": [{"function": {"name": "srs_add", "arguments": {"front": "hello"}}}]}},
+            {"message": {"content": ""}, "done": True, "done_reason": "stop", "prompt_eval_count": 40, "eval_count": 5,
+             "load_duration": 2e8, "prompt_eval_duration": 1e8, "eval_duration": 5e8},
+        )
+
+    pieces = []
+    r = provider_with(handler, keep_alive="30m", num_predict=300).chat([{"role": "user", "content": "hi"}], on_token=pieces.append)
+    assert pieces == ["Hal", "lo"] and r.content == "Hallo"
+    assert r.tool_calls[0].name == "srs_add" and r.tool_calls[0].arguments == {"front": "hello"}
+    assert (r.prompt_tokens, r.completion_tokens, r.load_s, r.eval_s, r.done_reason) == (40, 5, 0.2, 0.5, "stop")
+    assert r.first_token_s >= 0
+    assert seen["stream"] is True and seen["keep_alive"] == "30m" and seen["options"]["num_predict"] == 300
+
+
+def test_stop_while_streaming_ends_the_request():
+    def handler(request):
+        return ndjson(*[{"message": {"content": f"w{i} "}} for i in range(50)], {"done": True})
+
+    pieces = []
+    with pytest.raises(ProviderCancelled):
+        provider_with(handler).chat([{"role": "user", "content": "hi"}], on_token=pieces.append,
+                                    should_stop=lambda: len(pieces) >= 3)
+    assert len(pieces) == 3
+
+
+def test_streaming_errors_are_reported():
+    with pytest.raises(ProviderError, match="ollama pull"):
+        provider_with(lambda r: httpx.Response(404, text="nope"), model="tiny").chat([{"role": "user", "content": "x"}], on_token=print)
+    with pytest.raises(ProviderError, match="out of memory"):
+        provider_with(lambda r: ndjson({"error": "out of memory"})).chat([{"role": "user", "content": "x"}], on_token=print)
+
+
+def test_no_options_are_sent_unless_set():
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return reply({"content": "ok"})
+    provider_with(handler).chat([{"role": "user", "content": "hi"}])
+    assert "keep_alive" not in seen and "num_predict" not in seen["options"] and seen["stream"] is False
+
+
+def test_loaded_means_the_same_name_and_context_size():
+    cfg = ModelConfig(name="qwen3:8b", num_ctx=8192)
+    assert is_loaded(cfg, {"qwen3:8b": 8192}) is True
+    assert is_loaded(cfg, {"qwen3:8b": 4096}) is False  # another context size means a reload
+    assert is_loaded(cfg, {}) is False and is_loaded(cfg, None) is None
+    assert is_loaded(ModelConfig(name="llama3.2", num_ctx=4096), {"llama3.2:latest": 4096}) is True
+
+
+def test_warming_loads_the_model_with_the_agents_context_size():
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json={"done": True})
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert warm(ModelConfig(name="qwen3:8b", num_ctx=8192), "30m", client=client) is True
+    assert seen == {"model": "qwen3:8b", "prompt": "", "stream": False, "options": {"num_ctx": 8192}, "keep_alive": "30m"}

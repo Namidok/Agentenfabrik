@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from factory import server
+from factory.scheduler import ModelScheduler
 
 SPEC = """name: demo-agent
 goal: "Demo agent for the tests"
@@ -24,7 +25,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "SPECS_DIR", tmp_path / "specs")
     monkeypatch.setattr(server, "STATIC_DIR", tmp_path / "static")
     monkeypatch.setattr(server, "ollama_models", lambda: ["qwen3:8b"])
-    monkeypatch.setattr(server, "MODEL_LOCK", asyncio.Lock())
+    monkeypatch.setattr(server, "SCHEDULER", ModelScheduler(1))
+    monkeypatch.setattr(server, "loaded_models", lambda host=None: None)  # never call the real Ollama
+    monkeypatch.setattr(server, "warm_up", lambda configs: None)
     return TestClient(server.app, base_url="http://127.0.0.1")
 
 

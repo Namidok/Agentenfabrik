@@ -4,118 +4,175 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AgentFactory</title>
-  <meta name="color-scheme" content="dark">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231a1a2e'/%3E%3Crect x='5' y='9' width='10' height='14' fill='%238c7cf6'/%3E%3Crect x='17' y='9' width='10' height='14' fill='%232ec4a0'/%3E%3C/svg%3E">
+  <meta name="color-scheme" content="dark light">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Crect width='16' height='16' fill='%232b2230'/%3E%3Crect x='2' y='4' width='5' height='8' fill='%23b1a4ff'/%3E%3Crect x='9' y='4' width='5' height='8' fill='%232ec4a0'/%3E%3C/svg%3E">
+  <link rel="preload" href="/static/fonts/af-pixel.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/loft.css">
 </head>
 <body>
   <div class="app">
-    <aside class="col col-left">
-      <header class="panel brand">
-        <h1>AgentFactory</h1>
-        <p>Your own team of AI agents. They live on this computer and nothing leaves it.</p>
-        <dl class="runtime" aria-label="Runtime status">
-          <div><dt>Ollama</dt><dd><button type="button" class="pill" id="ollama-pill" title="Click to check again">Checking...</button></dd></div>
-          <div><dt>Models</dt><dd id="model-count">...</dd></div>
-        </dl>
-        <div class="brand-actions">
-          <button type="button" class="btn-secondary nova-btn" id="nova-btn" title="Chat with the front-desk guide">Talk to Nova</button>
-          <button type="button" class="btn-secondary" id="palette-btn" title="Search for an agent or an action and jump to it">Search <kbd class="kbd-hint">Ctrl K</kbd></button>
-        </div>
-      </header>
-
-      <section class="panel roster-panel" aria-labelledby="roster-title">
-        <div class="panel-head">
-          <h2 id="roster-title">Your agents <span class="count" id="agent-count"></span></h2>
-          <span class="panel-actions">
-            <button type="button" class="btn-quiet" id="new-agent-btn" title="Hire a new agent">New agent</button>
-            <button type="button" class="btn-quiet" id="refresh-agents" title="Reload the agents from the specs folder">Refresh</button>
-          </span>
-        </div>
-        <ul class="roster" id="roster"></ul>
-        <details class="problems" id="problems" hidden>
-          <summary id="problems-summary"></summary>
-          <ul id="problems-list"></ul>
-        </details>
-      </section>
+    <aside class="col col-left sheet frame" id="crew-sheet" aria-labelledby="roster-title">
+      <div class="sheet-bar">
+        <i class="ico ico-crew" aria-hidden="true"></i>
+        <h2 class="sheet-title" id="roster-title">Crew <span class="count" id="agent-count"></span></h2>
+        <button type="button" class="btn btn-sm btn-icon" id="new-agent-btn" data-tip="Hire a new agent" aria-label="Hire a new agent"><i class="ico ico-hire"></i></button>
+        <button type="button" class="btn btn-sm btn-icon" id="refresh-agents" data-tip="Reload the agents from the specs folder" data-tip-pos="left" aria-label="Refresh the agent list"><i class="ico ico-refresh"></i></button>
+        <button type="button" class="btn btn-sm btn-icon" data-sheet-close aria-label="Close the crew list"><i class="ico ico-close"></i></button>
+      </div>
+      <p class="sheet-sub">Your own team of AI agents. They live on this computer and nothing leaves it.</p>
+      <ul class="roster" id="roster" aria-busy="true">
+        <li class="roster-skeleton" aria-hidden="true"><span class="skeleton"></span><span class="skeleton skeleton-line"></span><span class="skeleton skeleton-line" style="width:70%"></span></li>
+        <li class="roster-skeleton" aria-hidden="true"><span class="skeleton"></span><span class="skeleton skeleton-line"></span><span class="skeleton skeleton-line" style="width:55%"></span></li>
+      </ul>
+      <details class="problems" id="problems" hidden>
+        <summary id="problems-summary"></summary>
+        <ul id="problems-list"></ul>
+      </details>
     </aside>
 
     <main class="col col-main" id="col-main">
       <section class="panel office-panel" aria-label="Office">
         <div class="office-stage" id="office-stage">
-          <canvas id="office" tabindex="0" role="application"
-            aria-label="The office. Use the arrow keys to move between agents and press Enter to open a chat."></canvas>
+          <div class="office-scroll" id="office-scroll">
+            <canvas id="office" tabindex="0" role="application"
+              aria-label="The office. Use the arrow keys to move between agents and press Enter to open a chat."></canvas>
+          </div>
           <div class="office-tip" id="office-tip" hidden></div>
-          <p class="office-hint" id="office-hint">Click an agent at their desk to talk to them. Right-click for more.</p>
-          <div class="nova-card" id="nova-card" role="dialog" aria-labelledby="nova-title" hidden>
+          <p class="office-hint" id="office-hint">Click an agent to talk. Click a window to change the time.</p>
+          <div class="office-empty frame" id="office-empty" hidden>
+            <div class="avatar" aria-hidden="true"><canvas id="empty-nova"></canvas></div>
+            <h2 class="px-lg">Nobody works here yet</h2>
+            <p>Hire your first agent: describe what it should do and Nova fills in the paperwork. It runs on this computer with Ollama.</p>
+            <div class="row">
+              <button type="button" class="btn btn-primary" id="empty-hire"><i class="ico ico-hire"></i>Hire an agent</button>
+              <button type="button" class="btn" id="empty-nova-btn"><i class="ico ico-nova"></i>Ask Nova</button>
+            </div>
+          </div>
+          <div class="nova-card frame" id="nova-card" role="dialog" aria-labelledby="nova-title" hidden>
             <div class="avatar" aria-hidden="true"><canvas id="nova-portrait"></canvas></div>
             <div class="nova-body">
               <h3 id="nova-title">Nova <span>front desk</span></h3>
               <p id="nova-text"></p>
               <div class="nova-actions" id="nova-actions"></div>
             </div>
-            <button type="button" class="btn-quiet" id="nova-close" aria-label="Close this and skip the intro" title="Close (Esc)">&#10005;</button>
+            <button type="button" class="btn btn-sm btn-icon btn-quiet" id="nova-close" aria-label="Close this and skip the intro" data-tip="Close (Esc)" data-tip-pos="left"><i class="ico ico-close"></i></button>
           </div>
         </div>
         <p class="sr-only" id="office-live" aria-live="polite"></p>
         <p class="sr-only" id="nova-sr" aria-live="polite"></p>
       </section>
 
-      <section class="panel chat" id="chat-section" aria-label="Chat" hidden>
+      <section class="panel chat frame" id="chat-section" aria-labelledby="chat-name" hidden>
         <div class="chat-live" id="chat-live">
           <header class="chat-head">
             <div class="avatar" id="chat-avatar" aria-hidden="true"></div>
             <div class="chat-title">
-              <h2 id="chat-name"></h2>
-              <p id="chat-sub"></p>
+              <h2 class="px-lg" id="chat-name"></h2>
+              <p class="chat-state" id="chat-state" aria-live="polite"><i class="ico ico-desk" id="chat-state-icon" aria-hidden="true"></i><span id="chat-state-text"></span><span class="muted" id="chat-sub"></span></p>
             </div>
             <div class="chat-actions">
-              <button type="button" class="btn-secondary" id="staff-btn" title="See this agent's file: instructions, permissions and limits">Staff file</button>
-              <button type="button" class="btn-secondary" id="notes-btn" aria-expanded="false" aria-controls="notes-drawer">Notes</button>
-              <button type="button" class="btn-secondary" id="new-chat-btn" title="Forget this conversation and start again">New chat</button>
-              <button type="button" class="btn-danger" id="remove-btn" title="Remove this agent. Its spec file goes to the Trash.">Remove</button>
-              <button type="button" class="btn-secondary" id="close-chat" title="Close the chat and look at the whole office">Close</button>
+              <button type="button" class="btn" id="staff-btn" data-tip="Staff file: job, rules, permissions"><i class="ico ico-file"></i><span>Staff file</span></button>
+              <button type="button" class="btn" id="notes-btn" aria-expanded="false" aria-controls="notes-drawer"><i class="ico ico-notes"></i><span>Notes</span></button>
+              <button type="button" class="btn" id="cards-btn" aria-expanded="false" aria-controls="cards-drawer" data-tip="Flashcards" hidden><i class="ico ico-card"></i><span>Flashcards</span></button>
+              <button type="button" class="btn btn-icon" id="chat-more" aria-haspopup="menu" aria-expanded="false" aria-controls="chat-menu" aria-label="More actions" data-tip="New chat, remove, close" data-tip-pos="left"><i class="ico ico-more"></i></button>
             </div>
           </header>
-          <div class="chips" id="chat-chips"></div>
+          <div class="chat-bar">
+            <button type="button" class="btn btn-sm" id="tools-btn" aria-expanded="false" aria-controls="tools-pop"><i class="ico ico-tools"></i><span id="tools-label">Tools</span><i class="ico ico-chevron"></i></button>
+            <span class="chip warn" id="chat-warn" hidden><i class="ico ico-warn"></i><span></span></span>
+            <span class="chip" id="chat-model"><i class="ico ico-brain"></i><span></span></span>
+            <span class="spacer"></span>
+            <span class="meter" id="chat-meter" role="meter" aria-label="Tokens used in this run" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0">
+              <span class="meter-bar"><i></i></span><span class="meter-text"></span>
+            </span>
+            <div class="tools-pop frame" id="tools-pop" hidden>
+              <h3 class="px">What it may use</h3>
+              <ul id="chat-chips"></ul>
+            </div>
+          </div>
+          <div class="menu" id="chat-menu" role="menu" aria-label="Chat actions" hidden>
+            <button type="button" role="menuitem" id="new-chat-btn"><i class="ico ico-refresh"></i>New chat</button>
+            <button type="button" role="menuitem" class="danger" id="remove-btn"><i class="ico ico-trash"></i>Remove agent...</button>
+            <hr>
+            <button type="button" role="menuitem" id="close-chat"><i class="ico ico-close"></i>Close chat</button>
+          </div>
           <div class="notes-drawer" id="notes-drawer" hidden>
-            <h3>Saved notes</h3>
+            <h3 class="px">Saved notes</h3>
             <pre id="notes-text"></pre>
+          </div>
+          <div class="notes-drawer cards-drawer" id="cards-drawer" hidden>
+            <div class="cards-head">
+              <h3 class="px" id="cards-title">Flashcards</h3>
+              <label class="check"><input type="checkbox" id="cards-reveal"> Show all answers</label>
+            </div>
+            <ul class="flashcards" id="cards-list" aria-labelledby="cards-title"></ul>
           </div>
           <div class="messages-wrap" id="messages-wrap"></div>
           <form class="composer" id="composer">
             <label class="sr-only" for="composer-input">Message</label>
             <textarea id="composer-input" rows="1" placeholder="Write a message. Enter sends, Shift+Enter adds a new line."></textarea>
-            <button type="submit" class="btn-primary" id="send-btn" title="Send the message (Enter)">Send</button>
+            <button type="submit" class="btn btn-primary" id="send-btn" title="Send the message (Enter)"><i class="ico ico-send"></i><span>Send</span></button>
+            <button type="button" class="btn btn-danger" id="stop-btn" hidden title="Stop after the current step"><i class="ico ico-stop"></i><span>Stop</span></button>
           </form>
+          <p class="composer-note" id="composer-note" hidden></p>
         </div>
       </section>
     </main>
 
-    <aside class="col col-right">
-      <section class="panel log-panel" aria-labelledby="log-title">
-        <div class="panel-head">
-          <h2 id="log-title">Activity</h2>
-          <button type="button" class="btn-quiet" id="clear-log" title="Remove every row from the activity log">Clear</button>
-        </div>
-        <ol class="log" id="log">
-          <li class="log-empty">When an agent works, every step shows up here. Click a step to see more.</li>
-        </ol>
-      </section>
+    <aside class="col col-right sheet frame" id="log-sheet" aria-labelledby="log-title">
+      <div class="sheet-bar">
+        <i class="ico ico-log" aria-hidden="true"></i>
+        <h2 class="sheet-title" id="log-title">Activity</h2>
+        <button type="button" class="btn btn-sm" id="clear-log" data-tip="Remove every row from the log" data-tip-pos="left">Clear</button>
+        <button type="button" class="btn btn-sm btn-icon" data-sheet-close aria-label="Close the activity log"><i class="ico ico-close"></i></button>
+      </div>
+      <div class="log-tools">
+        <label class="sr-only" for="log-filter">Show steps from</label>
+        <i class="ico ico-filter ico-sm muted" aria-hidden="true"></i>
+        <select class="select" id="log-filter"><option value="">Every agent</option></select>
+      </div>
+      <ol class="log" id="log" aria-live="polite" aria-relevant="additions">
+        <li class="log-empty"><i class="ico ico-log"></i>When an agent works, every step shows up here: what it read, which tools it used and how it went. Click a step to see more.</li>
+      </ol>
     </aside>
   </div>
 
+  <div class="hud">
+    <dl class="hud-chip" id="runtime-chip" aria-label="Runtime status">
+      <dt>Ollama</dt><dd><button type="button" class="pill" id="ollama-pill" title="Click to check again">Checking...</button></dd>
+      <dt>Models</dt><dd id="model-count">...</dd>
+    </dl>
+    <span class="hud-spacer"></span>
+    <button type="button" class="hud-chip time-chip" id="time-chip" title="Click to preview morning, afternoon, sunset, dusk and night">
+      <i class="ico ico-sun" aria-hidden="true"></i><b>...</b><small></small>
+    </button>
+    <button type="button" class="hud-chip help-chip" id="help-btn" aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts (?)" data-tip-pos="left"><i class="ico ico-help"></i></button>
+  </div>
+
+  <nav class="dock" aria-label="Office">
+    <button type="button" id="dock-crew" aria-expanded="false" aria-controls="crew-sheet" title="Your crew (C)"><i class="ico ico-crew"></i><span>Crew</span></button>
+    <button type="button" id="dock-log" aria-expanded="false" aria-controls="log-sheet" title="What the agents have been doing (L)"><i class="ico ico-log"></i><span>Activity</span></button>
+    <i class="sep"></i>
+    <button type="button" id="dock-hire" title="Hire a new agent (H)"><i class="ico ico-hire"></i><span>Hire</span></button>
+    <button type="button" id="nova-btn" class="nova-btn" title="Chat with the front-desk guide"><i class="ico ico-nova"></i><span>Nova</span></button>
+    <button type="button" id="palette-btn" title="Search for an agent or an action (Ctrl or Cmd + K)"><i class="ico ico-search"></i><span>Search</span></button>
+  </nav>
+
   <div class="menu" id="desk-menu" role="menu" hidden></div>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
   <dialog class="dialog" id="remove-dialog" aria-labelledby="remove-title">
     <form id="remove-form" method="dialog">
-      <h2 id="remove-title"></h2>
-      <p id="remove-text"></p>
-      <label class="check" id="remove-notes-row"><input type="checkbox" id="remove-notes"> Also move its saved notes to the Trash</label>
-      <p class="dialog-error" id="remove-error" role="alert" hidden></p>
+      <div class="dialog-bar"><i class="ico ico-trash" aria-hidden="true"></i><h2 class="dialog-title" id="remove-title"></h2></div>
+      <div class="dialog-body">
+        <p id="remove-text"></p>
+        <label class="check" id="remove-notes-row"><input type="checkbox" id="remove-notes"> Also move its saved notes to the Trash</label>
+        <p class="dialog-error" id="remove-error" role="alert" hidden></p>
+      </div>
       <div class="dialog-actions">
-        <button type="button" class="btn-secondary" id="remove-cancel" autofocus>Cancel</button>
-        <button type="submit" class="btn-danger" id="remove-confirm">Move to Trash</button>
+        <button type="button" class="btn btn-secondary" id="remove-cancel" autofocus>Cancel</button>
+        <button type="submit" class="btn btn-danger" id="remove-confirm"><i class="ico ico-trash"></i>Move to Trash</button>
       </div>
     </form>
   </dialog>
@@ -125,10 +182,10 @@
       <header class="hire-head">
         <div class="avatar" aria-hidden="true"><canvas id="hire-nova"></canvas></div>
         <div class="hire-head-text">
-          <h2 id="hire-title">Hire a new agent</h2>
+          <h2 class="px-lg" id="hire-title">Hire a new agent</h2>
           <p id="hire-sub"></p>
         </div>
-        <button type="button" class="btn-quiet" id="hire-x" aria-label="Close without hiring" title="Close (Esc)">&#10005;</button>
+        <button type="button" class="btn btn-icon btn-quiet" id="hire-x" aria-label="Close without hiring" data-tip="Close (Esc)" data-tip-pos="left"><i class="ico ico-close"></i></button>
       </header>
 
       <div class="hire-body" id="hire-body">
@@ -138,7 +195,7 @@
             <label for="hire-describe">In your own words, what should this agent do for you?</label>
             <textarea id="hire-describe" rows="3" maxlength="2000" placeholder="For example: A C++ teacher that explains memory and concurrency, quizzes me and remembers what I struggled with."></textarea>
             <div class="hire-row">
-              <button type="button" class="btn-secondary" id="hire-draft">Let Nova fill in the form</button>
+              <button type="button" class="btn btn-secondary" id="hire-draft"><i class="ico ico-nova"></i>Let Nova fill in the form</button>
               <span class="hint" id="hire-draft-status" role="status"></span>
             </div>
             <p class="hint">Or skip this and fill in the form yourself. Nova's draft always needs a quick check.</p>
@@ -204,7 +261,7 @@
           <div class="review-top">
             <div class="avatar" aria-hidden="true"><canvas id="hire-review-face"></canvas></div>
             <div>
-              <h3 id="hire-review-name"></h3>
+              <h3 class="px-lg" id="hire-review-name"></h3>
               <p id="hire-review-goal"></p>
             </div>
           </div>
@@ -226,50 +283,88 @@
 
       <p class="dialog-error" id="hire-error" role="alert" hidden></p>
       <div class="dialog-actions" id="hire-actions-form">
-        <button type="button" class="btn-quiet" id="hire-clear" title="Empty the whole form">Clear</button>
+        <button type="button" class="btn btn-quiet" id="hire-clear" title="Empty the whole form">Clear</button>
         <span class="spacer"></span>
-        <button type="button" class="btn-secondary" id="hire-cancel">Cancel</button>
-        <button type="button" class="btn-primary" id="hire-review-btn">Review</button>
+        <button type="button" class="btn btn-secondary" id="hire-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="hire-review-btn">Review<i class="ico ico-send"></i></button>
       </div>
       <div class="dialog-actions" id="hire-actions-review" hidden>
-        <button type="button" class="btn-secondary" id="hire-back">Back to edit</button>
+        <button type="button" class="btn btn-secondary" id="hire-back">Back to edit</button>
         <span class="spacer"></span>
-        <button type="button" class="btn-primary" id="hire-approve">Approve and hire</button>
+        <button type="button" class="btn btn-primary" id="hire-approve"><i class="ico ico-check"></i>Approve and hire</button>
       </div>
     </form>
   </dialog>
 
-  <script src="/static/office.js"></script>
   <dialog class="dialog dialog-wide" id="staff-dialog" aria-labelledby="staff-title">
     <form id="staff-form" method="dialog" onsubmit="return false">
       <header class="hire-head">
         <div class="avatar" aria-hidden="true" id="staff-avatar"></div>
         <div class="hire-head-text">
-          <h2 id="staff-title"></h2>
+          <h2 class="px-lg" id="staff-title"></h2>
           <p id="staff-sub"></p>
         </div>
-        <button type="button" class="btn-quiet" id="staff-x" aria-label="Close" title="Close (Esc)">&#10005;</button>
+        <button type="button" class="btn btn-icon btn-quiet" id="staff-x" aria-label="Close" data-tip="Close (Esc)" data-tip-pos="left"><i class="ico ico-close"></i></button>
       </header>
+      <div class="tabs" id="staff-tabs" role="tablist" aria-label="Staff file sections"></div>
       <div class="hire-body" id="staff-body"></div>
       <div class="dialog-actions">
-        <button type="button" class="btn-danger" id="staff-remove" title="Move this agent's file to the Trash">Remove...</button>
+        <button type="button" class="btn btn-danger" id="staff-remove" title="Move this agent's file to the Trash"><i class="ico ico-trash"></i>Remove...</button>
         <span class="spacer"></span>
-        <button type="button" class="btn-primary" id="staff-chat">Open chat</button>
+        <button type="button" class="btn btn-primary" id="staff-chat"><i class="ico ico-chat"></i>Open chat</button>
       </div>
     </form>
   </dialog>
 
   <dialog class="dialog palette" id="palette-dialog" aria-label="Search">
-    <input type="text" id="palette-input" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list"
-      placeholder="Type an agent's name or an action..." autocomplete="off" spellcheck="false">
+    <div class="palette-input-row">
+      <i class="ico ico-search" aria-hidden="true"></i>
+      <input type="text" id="palette-input" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list"
+        placeholder="Type an agent's name or an action..." autocomplete="off" spellcheck="false">
+    </div>
     <ul id="palette-list" role="listbox" aria-label="Results"></ul>
-    <p class="palette-foot">Up and down to move, Enter to choose, Esc to close</p>
+    <p class="palette-foot"><span><kbd>&uarr;</kbd> <kbd>&darr;</kbd> move</span><span><kbd>Enter</kbd> choose</span><span><kbd>Esc</kbd> close</span></p>
   </dialog>
 
+  <dialog class="dialog" id="help-dialog" aria-labelledby="help-title">
+    <div class="dialog-bar">
+      <i class="ico ico-keyboard" aria-hidden="true"></i><h2 class="dialog-title" id="help-title">Keyboard shortcuts</h2>
+      <button type="button" class="btn btn-sm btn-icon btn-quiet" id="help-close" aria-label="Close"><i class="ico ico-close"></i></button>
+    </div>
+    <div class="dialog-body" id="help-body">
+      <h3 class="px keys-group">Anywhere</h3>
+      <dl class="keys">
+        <dt><kbd>Ctrl</kbd><kbd>K</kbd></dt><dd>Search for an agent or an action (Cmd+K on a Mac)</dd>
+        <dt><kbd>?</kbd></dt><dd>This list</dd>
+        <dt><kbd>C</kbd></dt><dd>Open or close the crew list</dd>
+        <dt><kbd>L</kbd></dt><dd>Open or close the activity log</dd>
+        <dt><kbd>H</kbd></dt><dd>Hire a new agent</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Close the open menu, sheet or dialog</dd>
+      </dl>
+      <h3 class="px keys-group">In the office</h3>
+      <dl class="keys">
+        <dt><kbd>&larr;</kbd><kbd>&uarr;</kbd><kbd>&rarr;</kbd><kbd>&darr;</kbd></dt><dd>Move between desks</dd>
+        <dt><kbd>Enter</kbd></dt><dd>Open a chat with that agent</dd>
+        <dt><kbd>Shift</kbd><kbd>F10</kbd></dt><dd>More for that agent: staff file, remove</dd>
+      </dl>
+      <h3 class="px keys-group">In a chat</h3>
+      <dl class="keys">
+        <dt><kbd>Enter</kbd></dt><dd>Send</dd>
+        <dt><kbd>Shift</kbd><kbd>Enter</kbd></dt><dd>New line</dd>
+      </dl>
+    </div>
+  </dialog>
+
+  <script src="/static/pixel.js"></script>
+  <script src="/static/icons.js"></script>
+  <script src="/static/scene.js"></script>
+  <script src="/static/furniture.js"></script>
+  <script src="/static/office.js"></script>
   <script src="/static/hire.js"></script>
   <script src="/static/staff.js"></script>
   <script src="/static/palette.js"></script>
   <script src="/static/nova.js"></script>
+  <script src="/static/loft.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

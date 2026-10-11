@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -23,9 +24,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from factory.interviewer import SpecBuildError, build_spec, capability_notes, draft_to_spec, permission_warnings, save_spec
-from factory.llm import ProviderError, make_provider
+from factory.llm import ProviderError, is_loaded, loaded_models, make_provider, warm
 from factory.runtime import AgentSession
 from factory.schema import MAX_TOOLS, TOOL_REQUIRES, AgentSpec, ModelConfig, load_spec
+from factory.scheduler import Cancelled, ModelScheduler
+from factory.settings import apply_options, load_settings, memory_warnings, model_for
 from factory.tools import IMPLEMENTED, ToolContext
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,12 +38,36 @@ OLLAMA_HOST = "http://localhost:11434"
 MAX_MESSAGE_CHARS = 8000
 SLUG = re.compile(r"[a-z][a-z0-9-]{2,40}")
 
-# A small computer runs one model call at a time; other agents wait their turn.
-MODEL_LOCK = asyncio.Lock()
+# settings.yaml: the default model and how many agents may think at once (see factory/settings.py)
+SETTINGS, SETTINGS_ERROR = load_settings(ROOT / "settings.yaml")
+
+# A small computer runs few model calls at a time (max_parallel), all on one model; other agents wait in line.
+SCHEDULER = ModelScheduler(SETTINGS.max_parallel)
+
+
+def warm_up(configs: list[ModelConfig]) -> None:
+    """Load models in the background so the first message is not a cold start (one model on 16 GB)."""
+    def run() -> None:
+        for cfg in configs:
+            warm(cfg, SETTINGS.keep_alive, OLLAMA_HOST)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _startup_warm() -> None:
+    """At server start: the default model, with the context size most agents on it use."""
+    sizes = [model_for(s.model, SETTINGS)[0].num_ctx for s in load_all()[0] if model_for(s.model, SETTINGS)[0].name == SETTINGS.default_model]
+    warm_up([ModelConfig(name=SETTINGS.default_model, num_ctx=max(set(sizes), key=sizes.count) if sizes else 8192)])
+
+
+
+def model_key(cfg: ModelConfig) -> str:
+    """What Ollama must have loaded: another name or context size means unloading and reloading."""
+    return f"{cfg.name}@{cfg.num_ctx}"
 
 app = FastAPI(title="AgentFactory", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR), check_dir=False), name="static")
+app.router.on_startup.append(_startup_warm)  # load the model while the page opens
 
 
 @app.middleware("http")
@@ -127,12 +154,14 @@ def spec_files() -> dict[str, Path]:
 
 def summarize(spec: AgentSpec, models: list[str] | None, file: Path | None = None) -> dict[str, Any]:
     missing = [t for t in spec.tools if t not in IMPLEMENTED]
+    model, source = model_for(spec.model, SETTINGS)
     return {
         "name": spec.name,
         "goal": spec.goal,
         "mode": spec.mode,
-        "model": spec.model.name,
-        "model_installed": _has_model(models, spec.model.name),
+        "model": model.name,
+        "model_source": source,  # "spec": named in the agent's file, "default": from settings.yaml
+        "model_installed": _has_model(models, model.name),
         "tools": spec.tools,
         "missing_tools": missing,
         "runnable": not missing,
@@ -159,7 +188,13 @@ def index() -> FileResponse:
 @app.get("/api/config")
 def api_config() -> dict[str, Any]:
     models = ollama_models()
-    return {"ollama_host": OLLAMA_HOST, "ollama_up": models is not None, "models": models or []}
+    contexts: dict[str, int] = {}
+    for spec in load_all()[0]:
+        cfg = model_for(spec.model, SETTINGS)[0]
+        contexts[cfg.name] = max(contexts.get(cfg.name, 0), cfg.num_ctx)
+    return {"ollama_host": OLLAMA_HOST, "ollama_up": models is not None, "models": models or [],
+            "max_parallel": SETTINGS.max_parallel, "default_model": SETTINGS.default_model, "settings_error": SETTINGS_ERROR,
+            "warnings": memory_warnings(SETTINGS, contexts)}
 
 
 @app.get("/api/agents")
@@ -176,6 +211,19 @@ def api_notes(name: str) -> dict[str, str]:
     f = ToolContext(spec, ROOT).notes_file
     text = f.read_text(encoding="utf-8", errors="replace") if f.is_file() else ""
     return {"name": spec.name, "notes": text}
+
+
+@app.get("/api/agents/{name}/cards")
+def api_cards(name: str) -> dict[str, Any]:
+    """The agent's flashcards, read-only."""
+    spec = find_spec(name)
+    if not spec.memory.srs:
+        raise HTTPException(status_code=404, detail=f"{spec.name} does not keep flashcards.")
+    from factory import srs
+    try:
+        return {"name": spec.name, **srs.list_cards(ToolContext(spec, ROOT))}
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Could not read the card box ({type(e).__name__}).") from e
 
 
 @app.get("/api/agents/{name}/file")
@@ -397,6 +445,7 @@ def api_hire(request: Request, body: dict[str, Any] = Body(...)) -> dict[str, An
             path = save_spec(spec, SPECS_DIR)
         except OSError as e:
             raise HTTPException(status_code=500, detail=f"Could not save the agent file ({type(e).__name__}).") from e
+    warm_up([model_for(spec.model, SETTINGS)[0]])  # its first message should not wait for a model load
     return summarize(spec, ollama_models(), path)
 
 
@@ -418,9 +467,10 @@ async def api_hire_draft(request: Request, body: dict[str, Any] = Body(...)) -> 
     if len(description) > 2000:
         raise HTTPException(status_code=422, detail="That description is too long (limit 2000 characters).")
     transcript = [{"role": "user", "content": description}]
-    async with MODEL_LOCK:
+    draft_model = ModelConfig(name=SETTINGS.default_model)
+    async with SCHEDULER.slot(model_key(draft_model)):
         try:
-            provider = make_provider(ModelConfig())
+            provider = make_provider(draft_model)
             spec = await asyncio.to_thread(build_spec, provider, transcript)
         except ProviderError as e:
             raise HTTPException(status_code=503, detail=f"The model is not available: {e}") from e
@@ -433,7 +483,8 @@ async def api_hire_draft(request: Request, body: dict[str, Any] = Body(...)) -> 
 
 # ---------- chat websocket ----------
 #
-# client -> server: {"type": "message", "text": "..."}
+# client -> server: {"type": "message", "text": "..."} or {"type": "stop"} (ends the running turn
+#                   before its next model call; the call already in progress still finishes)
 # server -> client: {"event": "ready" | "queued" | "started" | "trace" | "reply" | "error", "payload": {...}}
 
 
@@ -448,10 +499,28 @@ def _clean(entry: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(entry, default=str))
 
 
-async def _run_turn(ws: WebSocket, session: AgentSession, text: str, events: asyncio.Queue) -> None:
-    if MODEL_LOCK.locked():
-        await ws.send_json({"event": "queued", "payload": {}})
-    async with MODEL_LOCK:
+async def _run_turn(ws: WebSocket, session: AgentSession, text: str, events: asyncio.Queue, key: str) -> None:
+    async def wait_in_line(position: int, reason: str) -> None:
+        await ws.send_json({"event": "queued", "payload": {"position": position, "reason": reason}})
+
+    try:
+        ticket = await SCHEDULER.acquire(key, on_wait=wait_in_line, should_stop=session.cancel.is_set)
+    except Cancelled:  # stopped while waiting: nothing ran, nothing is kept
+        await ws.send_json({"event": "reply", "payload": {"text": "(Stopped before it started.)", "ok": False,
+                                                          "stop_reason": "stopped", "steps": 0, "tokens": 0, "seconds": 0}})
+        return
+    try:
+        await _run_started_turn(ws, session, text, events)
+    finally:
+        SCHEDULER.release(ticket)
+
+
+async def _run_started_turn(ws: WebSocket, session: AgentSession, text: str, events: asyncio.Queue) -> None:
+    cfg = getattr(session, "model_cfg", None)
+    if cfg is not None and is_loaded(cfg, await asyncio.to_thread(loaded_models, OLLAMA_HOST)) is False:
+        # tell the page apart from "thinking": the model must be read into memory first
+        await ws.send_json({"event": "loading", "payload": {"model": cfg.name}})
+    if True:  # keeps the body below as it was
         await ws.send_json({"event": "started", "payload": {}})
         started = time.monotonic()
         gone = False
@@ -513,8 +582,14 @@ async def ws_chat(ws: WebSocket, name: str) -> None:
     def on_event(entry: dict[str, Any]) -> None:  # called from the worker thread
         loop.call_soon_threadsafe(events.put_nowait, _clean(entry))
 
+    model_cfg = model_for(spec.model, SETTINGS)[0]
+
     def new_session() -> AgentSession:
-        return AgentSession(spec, make_provider(spec.model), base_dir=ROOT, on_event=on_event)
+        provider = make_provider(model_cfg)
+        apply_options(provider, spec.mode, SETTINGS)
+        session = AgentSession(spec, provider, base_dir=ROOT, on_event=on_event)
+        session.model_cfg = model_cfg  # for the "loading the model" check before a turn
+        return session
 
     try:
         session = new_session()
@@ -524,13 +599,27 @@ async def ws_chat(ws: WebSocket, name: str) -> None:
         return
 
     await ws.send_json({"event": "ready", "payload": {"agent": spec.name, "mode": spec.mode}})
+    turn: asyncio.Task | None = None  # the running turn; messages keep being read meanwhile, for Stop
     try:
         while True:
             try:
                 data = await ws.receive_json()
             except ValueError:
                 continue
-            if not isinstance(data, dict) or data.get("type") != "message":
+            if not isinstance(data, dict):
+                continue
+            if turn is not None and turn.done():
+                turn.result()  # a turn that lost its connection ends the chat here
+                turn = None
+            if data.get("type") == "stop":
+                if turn is not None:
+                    session.cancel.set()
+                continue
+            if data.get("type") != "message":
+                continue
+            if turn is not None:
+                await ws.send_json({"event": "error", "payload": {
+                    "message": "The agent is still working on your last message. Wait for it, or press Stop."}})
                 continue
             text = str(data.get("text", "")).strip()
             if not text:
@@ -545,6 +634,11 @@ async def ws_chat(ws: WebSocket, name: str) -> None:
                 except (NotImplementedError, ProviderError) as e:
                     await ws.send_json({"event": "error", "payload": {"message": str(e)}})
                     continue
-            await _run_turn(ws, session, text, events)
+            session.cancel.clear()
+            turn = asyncio.create_task(_run_turn(ws, session, text, events, model_key(model_cfg)))
     except (WebSocketDisconnect, RuntimeError):
         return
+    finally:
+        if turn is not None and not turn.done():
+            session.cancel.set()  # nobody is listening any more: free the model after this step
+            turn.add_done_callback(lambda t: t.cancelled() or t.exception())

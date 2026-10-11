@@ -141,6 +141,86 @@ def test_provider_error_is_reported_not_raised(world):
 
 
 def test_unimplemented_tool_fails_before_running(world):
-    spec = make_spec(tools=["srs.add"], memory={"srs": True})
-    with pytest.raises(NotImplementedError, match="srs.add"):
+    spec = make_spec(tools=["fs.move"], permissions={"fs_write": ["./sandbox"]})
+    with pytest.raises(NotImplementedError, match="fs.move"):
         run_agent(spec, "go", MockProvider([]), base_dir=world)
+
+
+def test_a_cancelled_session_stops_before_the_next_model_call_and_stays_usable(world):
+    from factory.runtime import AgentSession
+    provider = MockProvider([resp(calls=[call("fs_list", path="./sandbox")]), resp("hello again")])
+    session = AgentSession(make_spec(mode="conversational"), provider, base_dir=world)
+    session.cancel.set()
+    result = session.send("go")
+    assert result.stop_reason == "stopped" and result.steps == 0
+    assert result.final_text == "(You stopped me before I could finish.)"
+    assert [m["role"] for m in session.messages] == ["system", "user", "assistant"]
+    session.cancel.clear()
+    assert session.send("again").stop_reason == "done"
+
+
+def test_replies_stream_to_the_listener_but_not_into_the_trace(world):
+    from factory.runtime import AgentSession
+    events = []
+    provider = MockProvider([resp("Hello there, nice to meet you.")], piece=6)
+    session = AgentSession(make_spec(mode="conversational"), provider, base_dir=world, on_event=events.append)
+    result = session.send("hi")
+    deltas = [e for e in events if e["event"] == "delta"]
+    assert "".join(e["text"] for e in deltas) == "Hello there, nice to meet you." and len(deltas) > 3
+    assert all(e["step"] == 1 for e in deltas)
+    assert not [e for e in result.trace if e["event"] == "delta"]
+
+
+def test_stop_while_the_model_is_writing_keeps_no_partial_reply(world):
+    from factory.runtime import AgentSession
+    session = None
+    pieces = []
+
+    def listen(entry):
+        if entry["event"] == "delta":
+            pieces.append(entry["text"])
+            if len(pieces) == 2:
+                session.cancel.set()  # the Stop button, mid-sentence
+    provider = MockProvider([resp("This answer is long and will be cut off halfway through.")], piece=5)
+    session = AgentSession(make_spec(mode="conversational"), provider, base_dir=world, on_event=listen)
+    result = session.send("tell me something")
+    assert result.stop_reason == "stopped" and len(pieces) == 2
+    assert result.final_text == "(You stopped me before I could finish.)"
+    assert not any("cut off" in str(m.get("content")) for m in session.messages)
+    assert [m["role"] for m in session.messages] == ["system", "user", "assistant"]
+
+
+# ---------- folding long chats into a summary ----------
+
+def test_long_chats_keep_the_last_turns_and_fold_older_ones_into_a_summary(world):
+    from factory.runtime import FOLD_AT, KEEP_TURNS, SUMMARY_HEAD, AgentSession
+    n = FOLD_AT + 1
+    provider = MockProvider([resp(f"answer {i}") for i in range(n + 3)])
+    events = []
+    session = AgentSession(make_spec(mode="conversational"), provider, base_dir=world, on_event=events.append)
+    system = session.messages[0]["content"]
+    for i in range(n):
+        session.send(f"question {i}")
+    users = [m for m in session.messages if m["role"] == "user"]
+    assert users[0]["content"].startswith(SUMMARY_HEAD)  # the summary sits right after the system prompt
+    assert "- User: question 0" in users[0]["content"] and "- You: answer 0" in users[0]["content"]
+    assert [m["content"] for m in users[1:]] == [f"question {i}" for i in range(n - KEEP_TURNS, n)]  # the last ones, word for word
+    assert session.messages[0]["content"] == system  # byte-stable prefix
+    folds = [e for e in events if e["event"] == "summary"]
+    assert len(folds) == 1 and folds[0]["turns"] == n - KEEP_TURNS
+    # the next turns do not fold again until the chat passes FOLD_AT turns once more
+    session.send("one more")
+    assert len([e for e in events if e["event"] == "summary"]) == 1
+    assert provider.calls[-1]["messages"][1]["content"].startswith(SUMMARY_HEAD)
+
+
+def test_the_summary_records_tools_and_stays_short():
+    from factory.runtime import summarize_turns
+    lines = summarize_turns([
+        {"role": "user", "content": "add a card for dog"},
+        {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "srs_add", "arguments": {}}}]},
+        {"role": "tool", "content": "Card added as id 1"},
+        {"role": "assistant", "content": "Done: der Hund. " + "x" * 400},
+    ])
+    assert lines[0] == "- User: add a card for dog"
+    assert lines[1].startswith("- You: Done: der Hund.") and lines[1].endswith("(used srs_add)") and len(lines[1]) < 200
