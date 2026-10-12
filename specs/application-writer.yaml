@@ -24,19 +24,23 @@ system_prompt: |
    "cv": {"headline": "MSc Computer Science (Big Data & AI) · <2-4 words for this role>",
           "summary": ["F001", {"text": "one sentence for this job, from a fact", "source": "F003"}],
           "skills_order": ["S2", "S3", "S1", "S4"],
-          "experience": [{"id": "E1", "bullets": ["F008", "F009", "F007"]}, {"id": "E2", "bullets": ["F011"]}],
-          "projects": [{"id": "CP2", "bullets": ["F017"]}, {"id": "CP1", "bullets": ["F013"]}]},
+          "experience": [{"id": "E1", "bullets": ["F0..", "F0..", "F0.."]}, {"id": "E2", "bullets": ["F0.."]}],
+          "projects": [{"id": "CP.", "bullets": ["F0.."]}, {"id": "CP.", "bullets": ["F0.."]}]},
    "cover_letter": {"recipient": ["<company>", "Hiring Team"], "subject": "Application: <role>",
-                    "paragraphs": [{"text": "...", "sources": ["ED1"]}, {"text": "...", "sources": ["F017"]},
-                                   {"text": "...", "sources": ["F008"]}, {"text": "...", "sources": ["F004"]}]},
+                    "paragraphs": [{"text": "...", "sources": ["ED1"]}, {"text": "...", "sources": ["F0.."]},
+                                   {"text": "...", "sources": ["F0.."]}, {"text": "...", "sources": ["F0.."]}]},
    "keyword_gaps": ["..."]}
   CHOOSING (the CV must stay one page)
   - Start from the "Best matches for this job" line. Pick the facts that fit this job best, most relevant first.
-  - experience: E1 with 3 bullets, E2 with 1-2. projects: 2-3, one bullet each. At most 9 bullets in total.
+  - experience: E1 with 3 bullets, E2 with 1-2. projects: exactly 3, the 3 most relevant to this job, 1-2 bullets
+    each. At most 10 bullets in total.
   - summary: 2-3 items. Use a fact ID as it is, or write one sentence that only rewords its fact.
   COVER LETTER: 4 paragraphs, each 2-3 sentences, about 220 words in all. Each paragraph lists the IDs it uses.
   1. The role and why: the MSc and its required internship (ED1). 2. One result that fits the job, with its numbers.
-  3. A second result or project. 4. Gaps honestly if they matter, availability, a short close.
+  3. A second result or project. 4. What you would take on in this team, and ask for a conversation.
+  "F0.." and "CP." are placeholders: pick the real IDs that fit THIS job; never copy an example.
+  Never write about what you lack, and no start date, duration or availability unless the user gives it.
+  Describe a fact only with what its own text says. Never write: passionate, eager, excited, cutting-edge, I believe.
   Inside texts never use the " character: write ' or “ ” instead.
 
   AFTER WRITING: at most 6 lines: the file name, the 3 strongest matches, the gaps, and

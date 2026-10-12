@@ -17,7 +17,16 @@ from common import DATA, ME, POSTINGS, ROOT, args, done, fail, latest, next_vers
 
 ROLE_WORDS = ["machine learning", "ml", "ai", "artificial intelligence", "ki", "künstliche intelligenz", "data engineer",
               "data engineering", "data science", "data scientist", "data", "python", "llm", "nlp", "deep learning",
-              "computer vision", "mlops", "genai", "generative ai", "software engineer", "backend", "analytics"]
+              "computer vision", "mlops", "genai", "generative ai", "software engineer", "backend", "analytics",
+              "maschinelles lernen", "datenanalyse", "datenengineering", "data-engineering", "datenwissenschaft"]
+# What the user wants, and nothing else: the title must name one of these (English or German) ...
+TARGET_WORDS = ["ai", "ki", "artificial intelligence", "künstliche intelligenz", "machine learning", "maschinelles lernen",
+                "ml", "deep learning", "llm", "llms", "nlp", "computer vision", "genai", "generative ai", "agentic",
+                "data engineer", "data engineering", "datenengineering", "data science", "data scientist",
+                "datenwissenschaft", "mlops"]
+# ... and it must be an internship, Praktikum or working-student job.
+WANTED_KIND = ["intern", "internship", "praktikum", "praktikant", "praktikantin", "werkstudent", "werkstudentin",
+               "working student", "pflichtpraktikum"]
 INTERN_WORDS = ["intern", "internship", "praktikum", "praktikant", "praktikantin", "trainee"]
 SENIOR_WORDS = ["senior", "lead", "principal", "staff", "head of", "director", "manager", "architect", "sr."]
 GERMAN_REQUIRED = re.compile(
@@ -89,6 +98,8 @@ def score(job: dict, prefs: dict, vocab: list[str]) -> dict:
     else:
         flags.append("role_not_in_title")
     intern = any(has(title, w) for w in INTERN_WORDS) or "internship" in criteria.lower()
+    if not (any(has(title, w) for w in TARGET_WORDS) and (intern or any(has(title, w) for w in WANTED_KIND))):
+        flags.append("not_wanted")  # not an AI/ML/data-engineering internship: hidden from every list
     if intern:
         points += 20
     elif has(title, "werkstudent") or has(title, "working student"):
@@ -151,14 +162,17 @@ def main() -> None:
     results.sort(key=lambda r: -r["score"])
     path = write_json(next_version(DATA, "shortlist"), {"version": 1, "made": today(), "preferences": rel(prefs_path) if prefs_path else "",
                                                         "jobs": results})
+    wanted = [r for r in results if "not_wanted" not in r["flags"]]
     table = ["| score | id | title | company | location | flags | matched skills |", "|---|---|---|---|---|---|---|"]
     table += [f"| {r['score']} | {r['id']} | {r['title'][:60]} | {r['company'][:40]} | {r['location'][:30]} | {', '.join(r['flags'])} | "
-              f"{', '.join(r['matched_skills'][:8])} |" for r in results[:40]]
+              f"{', '.join(r['matched_skills'][:8])} |" for r in wanted[:40]]
     md = path.with_suffix(".md")
-    md.write_text(f"# Shortlist {path.stem} ({today()}): best first, at most 40 rows\n\n" + "\n".join(table) + "\n", encoding="utf-8")
+    md.write_text(f"# Shortlist {path.stem} ({today()}): AI/ML/data-engineering internships only, best first\n\n" + "\n".join(table)
+                  + f"\n\n{len(results) - len(wanted)} other jobs hidden (not an AI/ML/data-engineering internship).\n", encoding="utf-8")
     top = int(a.get("top", 10))
     done({"ok": True, "file": rel(path), "table": rel(md), "scored": len(results), "missing": missing[:10],
-          "top": [{"id": r["id"], "score": r["score"], "flags": r["flags"]} for r in results[:top]]})
+          "wanted": len(wanted), "hidden": len(results) - len(wanted),
+          "top": [{"id": r["id"], "score": r["score"], "flags": r["flags"]} for r in wanted[:top]]})
 
 
 if __name__ == "__main__":

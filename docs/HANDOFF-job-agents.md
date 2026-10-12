@@ -35,6 +35,34 @@ Full user guide: docs/JOB-AGENTS.md.
 - Job Matcher: shortlist + details; fixed matched_skills to count only the user's own skills.
 
 ## Left for the user
-- 7 old flashcards in data/german-teacher/cards.db are wrong German; asked earlier whether to delete, no answer.
+- German-teacher flashcards: the 7 wrong cards were deleted on 2026-10-12 at the user's request (deck now empty;
+  backup data/german-teacher/cards.db.backup-before-delete). Notes still say A0, numbers 1-10.
 - Real data now holds: profile_v1 (+ .md), projects_v1..v3, preferences_v1 (from the user's stated preferences),
   7 postings, jobs_v1, shortlist_v1..v2, briefs for li-4438674690 (v1, v2). output/ is still empty.
+
+## How the user runs it (given 2026-10-12)
+`.venv/bin/python serve.py` -> http://127.0.0.1:8010. Job Desk: profile -> GitHub -> preferences -> search -> shortlist.
+Job Matcher: choose. Then Job Desk "prepare <id>" -> CV Writer "<id>" -> CV Reviewer "<id>" -> Job Desk "render <id>".
+PDFs in output/, status in output/tracker.csv. Job Desk's real notes are still empty (live tests ran in copies).
+
+## Automatic run (built 2026-10-12, user request: all 4 agents on one trigger every 3 hours)
+- scripts/jobs/pipeline.py (orchestration, report, ranked list, notes line, Mac notification), auto_agents.py (model
+  steps with Ollama structured output; fact IDs are enums), schedule.py (LaunchAgent com.agentfactory.jobsearch,
+  INSTALLED, 00/03/.../21:00, log data/jobs/pipeline.log), run_now.py (allowlisted; Job Desk "run now").
+- Search window: 24 h + 2 pages on the first run of a day, else since last run (+1 h). sources.py: "hours" -> f_TPR=r<seconds>.
+- Matcher uses thinking (~2 min/job); writer/reviewer do not. Off-topic jobs (role_not_in_title and keyword score
+  < 40) and senior / not-internship jobs are skipped without the model. German blocks writing only when the
+  posting's text requires it (shortlist flag), never on the model's guess (it invented "good German" for BMW).
+- Quality lessons (live, BMW li-4473693337): the model copied example IDs, invented availability, wrote "I lack",
+  rated every item 3/3, dropped punctuation when told "no punctuation like ·". Fix: program picks facts
+  (matcher mapping + title/posting word stems), fixed true sentences for role/company/MSc/internship, model writes
+  hook / 2 evidence paragraphs / closing; program checks (numbers incl. 8k=8,000, filler, lacking, availability)
+  + model claim check per part; one rewrite; fallback = the fact as a plain sentence. v4 BMW letter: no issues.
+- Chat agents: matcher reads data/jobs/ranked.md first and always shows IDs; writer prompt has placeholder IDs
+  (no copying); reviewer never suggests adding skills; Job Desk knows run_now/schedule.
+- output/ has earlier BMW test versions v1-v3 (+ tracker rows); v4 is the good one. Not deleted (user's folder).
+
+## Clean slate (2026-10-12 12:37, user request)
+All job-agent data (data/jobs, output/, data/job-desk/notes.md) moved to ~/.Trash/agentfactory-job-data-20261012-1237.
+Kept: inputs/master_cv.pdf, templates, code, specs, the every-3-hours schedule. A scheduled run without a profile
+stops with "No profile yet" until Job Desk step 1 (extract_cv) has run again.

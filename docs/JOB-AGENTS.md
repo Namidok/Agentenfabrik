@@ -85,6 +85,38 @@ All result files are versioned (`_v1`, `_v2`, …) and never overwritten.
 - JSON validation happens in the programs (`render`, `save_preferences`), not in the AgentFactory runtime:
   the runtime has no output-schema checks.
 
+## Automatic run (every 3 hours, one trigger)
+
+`scripts/jobs/pipeline.py` does the work of all four agents in one go, without chatting:
+
+| Step | Agent | What happens |
+|---|---|---|
+| 1 | Job Desk | LinkedIn search: the **last 24 hours** on the first run of a day (2 result pages per search), afterwards **since the last run** (+1 hour overlap). Jobs already seen are skipped. Keyword score for each new job. |
+| 2 | Job Matcher | Each new job is ranked against your profile: its main requirements, which of your facts show each one, gaps, fit 0-100, apply / maybe / skip. Uses thinking mode (about 1.5 min per job). Non-internships and senior roles are skipped by the keyword check without the model. |
+| 3 | CV Writer | For each job with verdict **apply** (fit 70+), up to 3 per run: the program picks the CV's bullets and projects from the matcher's mapping and the job's words; the model tailors the headline and summary and writes the letter's hook, two evidence paragraphs and closing around fixed, true sentences (role, company, MSc, mandatory internship). |
+| 4 | CV Reviewer | Program checks (numbers must be in the cited fact, no filler words, no "I lack...", no invented availability, length) and a model claim check per paragraph; flagged parts are rewritten once; anything still unsupported is replaced by the fact itself or removed. |
+| 5 | render | Both PDFs in the master CV design, a row in `output/tracker.csv`. |
+| 6 | report | `output/runs/<date>_<time>.md`, all ranked jobs in `output/ranked_jobs.md` (Job Matcher reads `data/jobs/ranked.md`), a line in Job Desk's notes, a Mac notification. **Nothing is sent.** |
+
+Turn it on, off, or start it now:
+- Job Desk: `run now`, `turn on the automatic search every 3 hours`, `turn it off`, `is the automatic search on?`
+- Or in Terminal: `.venv/bin/python scripts/jobs/schedule.py '{"action": "install", "every_hours": 3}'`
+  (`"remove"`, `"status"`), and `.venv/bin/python scripts/jobs/pipeline.py` to run once.
+
+It runs at 00:00, 03:00, ... 21:00 while the Mac is awake; a run missed during sleep starts on wake. One run at a
+time (a second one exits). Log: `data/jobs/pipeline.log`. A run takes about 3-5 minutes per job it writes for, plus
+about 1.5 minutes per new job it ranks (at most 12 per run; the rest are ranked next run).
+
+Optional settings in your preferences (tell Job Desk, or edit the newest `data/jobs/me/preferences_vN.json`):
+- `"availability": "from March 2027 for 6 months"`: only then does the letter mention availability.
+- `"languages": [{"language": "German", "level": "B2"}]`: B2 or better lets German-required jobs be written too.
+- `"automation": {"min_fit": 70, "max_drafts_per_run": 3, "max_matches_per_run": 12}`.
+
+Why the model only fills in small parts: qwen3:8b rated every item "3 of 3" when asked to judge relevance, copied
+example IDs, invented availability and wrote "I lack..." sentences when it wrote whole letters. Picking facts by
+program and asking the model for short, checked pieces made the letters specific and true (tested on the BMW
+in-car voice assistant role: ZOOBIE, hiring-co and ZweiGeeks chosen, no check failures).
+
 ## The design check
 
 `render` prints with `templates/cv.css`, measured from your master CV (Carlito, navy `#1f3a6b` headings with a rule,

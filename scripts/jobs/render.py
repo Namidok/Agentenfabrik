@@ -98,10 +98,23 @@ def source_texts(profile: dict, projects: dict | None) -> dict[str, str]:
     return texts
 
 
+def _numbers(text: str) -> list[tuple[str, set[str]]]:
+    """Each number in text with the forms that mean the same: 8,000 = 8000 = 8k, 1.5k = 1500, 3,5 = 3.5."""
+    text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)  # thousands separators
+    found = []
+    for m in re.finditer(r"(\d+(?:[.,]\d+)?)\s*([kK])?(?![a-zA-Z])", text):
+        value = m.group(1).replace(",", ".")
+        forms = {value}
+        if m.group(2):
+            forms.add(f"{float(value) * 1000:g}")
+        found.append((m.group(1) + (m.group(2) or ""), forms))
+    return found
+
+
 def unsupported_numbers(text: str, cited: list[str], texts: dict[str, str], allowed: str = "") -> list[str]:
     pool = " ".join(texts.get(c, "") for c in cited) + " " + allowed
-    have = {n.replace(",", ".") for n in NUMBER.findall(pool)}
-    return [n for n in NUMBER.findall(text) if n.replace(",", ".") not in have]
+    have = set().union(*[forms for _, forms in _numbers(pool)]) if pool.strip() else set()
+    return [shown for shown, forms in _numbers(text) if not forms & have]
 
 
 def words(text: str) -> set[str]:
@@ -208,10 +221,12 @@ def build_cv(draft: dict, profile: dict, projects: dict | None) -> dict:
     by_id = {p["id"]: p for p in profile["projects"]}
     by_id.update({p["id"]: {"name": p["name"], "tagline": "", "stack": p["stack"][:6], "link": p["link"]}
                   for p in (projects or {}).get("projects", [])})
-    if cv.get("projects"):
-        chosen = [{**by_id[p["id"]], "bullets": p["bullets"]} for p in cv["projects"] if p["id"] in by_id]
-    else:  # none chosen: the master CV's projects, as they are (they fit its one page)
-        chosen = profile["projects"]
+    chosen = [{**by_id[p["id"]], "id": p["id"], "bullets": p["bullets"][:2]} for p in cv.get("projects", []) if p["id"] in by_id][:3]
+    for p in profile["projects"]:  # always three projects: fill up from the master CV, one bullet each
+        if len(chosen) >= 3:
+            break
+        if p["id"] not in {c["id"] for c in chosen}:
+            chosen.append({**p, "bullets": p["bullets"][:1]})
     return {"header": header, "summary": unique(cv["summary"]), "skills": skills, "experience": experience,
             "projects": chosen, "education": profile["education"]}
 

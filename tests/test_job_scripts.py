@@ -292,7 +292,7 @@ class FakeSource:
     def __init__(self, pacer):
         self.pacer = pacer
 
-    def search(self, q):
+    def search(self, q, start=0):
         self.pacer.used += 1
         return [{"id": "li-1", "title": "AI Intern", "company": "A", "location": "Berlin", "posted": "", "link": "l1"},
                 {"id": "li-2", "title": "ML Intern", "company": "B", "location": "Munich", "posted": "", "link": "l2"}]
@@ -446,3 +446,13 @@ def test_matched_skills_are_only_the_users_own():
     job = shortlist.score(posting("li-9", "ML Intern", "TensorFlow, Kubernetes, Python and SQL."), {}, vocab)
     assert "python" in job["matched_skills"] and "sql" in job["matched_skills"]
     assert "tensorflow" not in job["matched_skills"] and "kubernetes" not in job["matched_skills"]
+
+
+def test_render_always_shows_three_projects_with_at_most_two_bullets():
+    profile = {**PROFILE, "projects": PROFILE["projects"] + [
+        {"id": f"CP{n}", "name": f"p{n}", "tagline": "", "stack": [], "link": "", "bullets": [{"id": f"F10{n}", "text": f"Built p{n}."}]}
+        for n in (2, 3, 4)]}
+    d = draft(projects=[{"id": "CP1", "bullets": ["F005", "F005", "F005"]}])
+    render.expand_fact_ids(d, profile)
+    cv = render.build_cv(d, profile, PROJECTS)
+    assert [p["id"] for p in cv["projects"]] == ["CP1", "CP2", "CP3"] and len(cv["projects"][0]["bullets"]) == 2

@@ -6,7 +6,8 @@ data and are only read by agents that cannot use the network, run programs or wr
 Writes data/jobs/postings/<id>.json (description cut to about 3000 characters), data/jobs/jobs_vN.json (an
 index of this run's new jobs, without descriptions) and data/jobs/seen.json (every job ever seen, to skip repeats).
 
-Arguments (JSON, optional): {"source": "linkedin", "max_requests": 30, "queries": ["..."], "age": "week"}
+Arguments (JSON, optional): {"source": "linkedin", "max_requests": 30, "queries": ["..."], "age": "week",
+                             "hours": 24, "pages": 1}  (hours overrides age; pages = result pages of 10 per query)
 Prints: {"ok", "requests_used", "found", "new", "saved", "ids", "stopped", "file"}"""
 from __future__ import annotations
 
@@ -16,7 +17,8 @@ from common import DATA, ME, POSTINGS, args, clip, done, fail, latest, next_vers
 from sources import SOURCES, Blocked, OutOfBudget, Pacer
 
 DEFAULT_SEARCH = {
-    "queries": ["Machine Learning Intern", "AI Intern", "Data Engineering Intern", "Python Intern"],
+    "queries": ["Machine Learning Intern", "AI Intern", "Data Engineering Intern",
+                "Praktikum Machine Learning", "Praktikum Künstliche Intelligenz", "Praktikum Data Engineering"],
     "location": "Germany", "age": "week", "job_types": ["internship"], "workplace": [],
 }
 
@@ -27,7 +29,7 @@ def main() -> None:
     search = dict(DEFAULT_SEARCH)
     if prefs_path:
         search.update(read_json(prefs_path).get("search") or {})
-    for key in ("queries", "location", "age", "job_types", "workplace"):
+    for key in ("queries", "location", "age", "hours", "job_types", "workplace"):
         if key in a:
             search[key] = a[key]
     source_name = a.get("source", "linkedin")
@@ -42,9 +44,14 @@ def main() -> None:
     saved: list[dict] = []
     stopped = ""
     try:
+        pages = max(1, min(int(a.get("pages", 1)), 3))
         for query in search["queries"]:
-            for stub in source.search({**search, "keywords": query}):
-                found.setdefault(stub["id"], stub)  # the same job from two searches counts once
+            for page in range(pages):
+                stubs = source.search({**search, "keywords": query}, start=page * 10)
+                for stub in stubs:
+                    found.setdefault(stub["id"], stub)  # the same job from two searches counts once
+                if len(stubs) < 10:  # a short page is the last one
+                    break
         for stub in [s for s in found.values() if s["id"] not in seen]:
             job = source.detail(stub)
             POSTINGS.mkdir(parents=True, exist_ok=True)

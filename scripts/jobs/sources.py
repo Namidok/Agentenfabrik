@@ -169,7 +169,9 @@ class LinkedInGuest:
 
     def search_url(self, q: dict[str, Any], start: int = 0) -> str:
         params = {"keywords": q["keywords"], "location": q.get("location", "Germany"), "start": start}
-        if q.get("age") in self.AGE:
+        if q.get("hours"):  # a window in hours ("posted in the last 4 hours"); LinkedIn takes any number of seconds
+            params["f_TPR"] = f"r{int(float(q['hours']) * 3600)}"
+        elif q.get("age") in self.AGE:
             params["f_TPR"] = self.AGE[q["age"]]
         workplace = [self.WORKPLACE[w] for w in q.get("workplace", []) if w in self.WORKPLACE]
         if workplace:

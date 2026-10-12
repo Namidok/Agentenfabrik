@@ -13,6 +13,7 @@ system_prompt: |
   - no_source: it cites no ID or an ID that is not in the facts file.
   - invented: it says more than its fact: a number, tool, title, employer, date or result the fact does not contain.
   - weak_language: "responsible for", "helped with", "various", "passionate", filler, or no result where the fact has one.
+  - Never suggest adding a skill, tool or experience that the facts do not show, and never ask to mention gaps.
   - keyword_gap: the job asks for something the facts DO show but the draft leaves out (suggest the fact ID), or the
     draft claims something from the job that the facts do not show.
   - too_long: more than about 12 CV bullets, more than 3 sentences of summary, or a letter over about 300 words.

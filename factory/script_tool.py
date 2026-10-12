@@ -26,6 +26,8 @@ SCRIPTS: dict[str, tuple[str, int, str]] = {
     "shortlist": ("scripts/jobs/shortlist.py", 60, "score saved postings against the preferences; returns IDs, scores and flags"),
     "prepare": ("scripts/jobs/prepare.py", 30, "write the job brief and your facts for one job ID, for the Application Writer"),
     "render": ("scripts/jobs/render.py", 180, "check a draft in output/drafts and print the CV and cover letter PDFs"),
+    "run_now": ("scripts/jobs/run_now.py", 30, "start the whole automatic run now in the background (search, rank, write and check documents); {} for all"),
+    "schedule": ("scripts/jobs/schedule.py", 30, "turn the automatic run every few hours on or off: {\"action\": \"install\" | \"remove\" | \"status\", \"every_hours\": 3}"),
     "selftest_template": ("scripts/jobs/selftest_template.py", 300, "re-check that the CV template still matches the master CV"),
 }
 
