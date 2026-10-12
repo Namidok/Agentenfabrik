@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from factory.llm import LLMResponse, MockProvider, ToolCall
@@ -194,3 +196,14 @@ def test_fetch_tool_needs_a_url(world):
 def test_fetch_tool_rejects_bad_offset(world):
     with pytest.raises(ToolError, match="offset"):
         fetch_tool(web_ctx(world, ok_page), url="https://example.com/", offset="abc")
+
+
+def test_leading_slash_is_read_as_the_project_folder_when_that_is_allowed(world):
+    out = run_tool(world, "fs.write", path="/out/draft.json", content="{}")
+    assert "Wrote" in out and (world / "out" / "draft.json").read_text() == "{}"
+
+
+@pytest.mark.parametrize("path", ["/secret.txt", "/../secret.txt", "/sandbox/../secret.txt", str(Path("/etc/passwd"))])
+def test_leading_slash_never_reaches_outside_the_allowed_folders(world, path):
+    with pytest.raises(ToolError, match="Permission denied"):
+        run_tool(world, "fs.read", path=path)

@@ -1,3 +1,5 @@
+> **Completed 2026-10-12.** Everything below is done; the results are in docs/PERFORMANCE.md and docs/benchmarks/.
+
 # Performance work: where it stands (paused 2026-10-11)
 
 Task: faster agent replies and agents running in parallel (items 0-6 of the performance brief).

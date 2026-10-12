@@ -1,0 +1,6 @@
+{
+  "approved": true,
+  "date": "2026-10-12",
+  "report": "templates/fidelity_report_v5.json",
+  "note": "Approved by the user after 5 iterations: mean line offset 0.86 pt, 5.7% ink difference beyond 1 px (threshold 1.5%), so not an exact match by the test."
+}

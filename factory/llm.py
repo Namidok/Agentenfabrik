@@ -204,6 +204,22 @@ class OllamaProvider(LLMProvider):
             ) from e
 
 
+def prefill(provider: LLMProvider, messages: list[dict[str, Any]], tools: list | None) -> bool:
+    """Have Ollama read the start of a conversation (system prompt and tools) without writing a reply,
+    so it sits in the prompt cache and the first real message only has to read itself."""
+    if not isinstance(provider, OllamaProvider):
+        return False
+    saved = provider.num_predict
+    provider.num_predict = 1
+    try:
+        provider.chat([*messages, {"role": "user", "content": "."}], tools=tools)
+        return True
+    except ProviderError:
+        return False
+    finally:
+        provider.num_predict = saved
+
+
 def loaded_models(host: str = "http://localhost:11434", client: httpx.Client | None = None) -> dict[str, int] | None:
     """Models Ollama has in memory right now, with their context size; None when Ollama is not reachable."""
     try:

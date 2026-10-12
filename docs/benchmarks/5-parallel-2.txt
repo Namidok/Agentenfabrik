@@ -1,0 +1,8 @@
+
+=== 2 x chat ===
+one after the other:   67.9 s   all at once:   44.0 s   (1.54x)
+while running together: 8.70 s per turn, 5.3 tok/s per agent
+
+=== 2 x task ===
+one after the other:   78.4 s   all at once:   62.6 s   (1.25x)
+while running together: 12.51 s per turn, 5.7 tok/s per agent

@@ -58,16 +58,17 @@ def memory_warnings(settings: Settings, contexts: dict[str, int]) -> list[str]:
 
 
 # Most tokens one reply may have: chat replies are short, a task agent may write a long answer or file.
-NUM_PREDICT = {"conversational": 768, "task": 2048}
+NUM_PREDICT = {"conversational": 1024, "task": 2048}
 
 
-def apply_options(provider, mode: str, settings: Settings) -> None:
+def apply_options(provider, mode: str, settings: Settings, writes_files: bool = False) -> None:
     """Request options the spec format does not carry: how long the model stays loaded, and a cap on
-    reply length per kind of agent (it stops a runaway reply, it does not shorten normal ones)."""
+    reply length per kind of agent (it stops a runaway reply, it does not shorten normal ones).
+    A chat agent that writes files gets the task cap: the file's whole text is part of its reply."""
     if hasattr(provider, "keep_alive"):
         provider.keep_alive = settings.keep_alive
     if hasattr(provider, "num_predict"):
-        provider.num_predict = NUM_PREDICT.get(mode, NUM_PREDICT["task"])
+        provider.num_predict = NUM_PREDICT["task"] if writes_files else NUM_PREDICT.get(mode, NUM_PREDICT["task"])
 
 
 def model_for(spec_model: ModelConfig, settings: Settings) -> tuple[ModelConfig, str]:

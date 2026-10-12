@@ -1,0 +1,33 @@
+... german
+... task
+... chat
+
+=== after: per turn ===
+agent   turn                               first_token    visible      total      calls prompt_tok     read_s    out_tok      tok_s    model_s overhead_s  stop
+german  Let's get started.                       1.23       1.23       2.78          1       1716       1.13         28       18.1       2.77      0.005  done
+german  I'm a total beginner.                    1.88       6.43       7.78          2       3568       1.95        101       18.0       7.77      0.004  done
+german  ok                                       3.23       8.04       9.89          2       4013       3.59        108       17.8       9.89      0.005  done
+german  Ich habe ein Hund.                       3.04        9.8       13.4          3       6899       4.44        146       17.2      13.39      0.005  done
+german  yes                                      3.08       4.05        5.9          2       4682       2.35         59       17.7        5.9      0.004  done
+task    List the files in ./sandbox.             1.23       2.07       2.97          2        629       0.86         38       19.9       2.97      0.001  done
+task    Summarize ./sandbox/notes.txt in o       1.39       2.06       3.71          2        632       0.68         54       19.2        3.7      0.001  done
+task    What is on the todo list in ./sand       1.45       2.27       3.75          2        628       0.79         50       18.4       3.75        0.0  done
+task    How many lines does ./sandbox/poem       1.26       4.26       5.01          3       1051       1.67         58       19.0       5.01      0.001  done
+task    Which file in ./sandbox is the lon       1.29        2.2       2.74          2        633       0.95         31       19.3       2.74      0.001  done
+chat    Hi! Give me one tip for better sle       0.32       0.32       2.48          1        126       0.22         41       19.0       2.48        0.0  done
+chat    Why does that help?                      0.82       0.82       3.74          1        181       0.72         55       18.8       3.74        0.0  done
+chat    Give me a second tip.                    0.89       0.89       3.38          1        251       0.79         46       18.5       3.38        0.0  done
+chat    Sum up both tips in one line.            0.87       0.87       2.08          1        314       0.78         21       17.4       2.08        0.0  done
+chat    Thanks!                                  0.61       0.61       1.68          1        346       0.52         20       18.8       1.68        0.0  done
+
+=== after: average per turn ===
+agent   model              first_token    visible      total      calls prompt_tok     read_s    out_tok      tok_s    model_s overhead_s
+german  qwen3:8b                 2.49       5.91       7.95          2     4175.6       2.69       88.4      17.76       7.94      0.005
+task    qwen3:8b                 1.32       2.57       3.64        2.2      714.6       0.99       46.2      19.16       3.63      0.001
+chat    qwen3:8b                  0.7        0.7       2.67          1      243.6       0.61       36.6       18.5       2.67        0.0
+
+=== after: prompt size of the last request, in tokens ===
+agent     system    notes    tools  history    total
+german      1145       10      431      829     2415
+task         101        0      178       88      364
+chat         117        0        1      254      370

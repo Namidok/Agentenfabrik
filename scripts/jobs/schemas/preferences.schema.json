@@ -1,0 +1,179 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "title": "preferences",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "location",
+  "target_roles",
+  "seniority",
+  "search"
+ ],
+ "properties": {
+  "location": {
+   "type": "string"
+  },
+  "relocation": {
+   "type": "string"
+  },
+  "work_authorization": {
+   "type": "string"
+  },
+  "languages": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "language",
+     "level"
+    ],
+    "properties": {
+     "language": {
+      "type": "string"
+     },
+     "level": {
+      "type": "string",
+      "enum": [
+       "A1",
+       "A2",
+       "B1",
+       "B2",
+       "C1",
+       "C2",
+       "native"
+      ]
+     }
+    }
+   }
+  },
+  "career_stage": {
+   "type": "string"
+  },
+  "years_experience": {
+   "type": "number"
+  },
+  "target_roles": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "seniority": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "industries_target": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "industries_avoid": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "workplace": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "enum": [
+     "onsite",
+     "hybrid",
+     "remote"
+    ]
+   }
+  },
+  "salary": {
+   "type": "string"
+  },
+  "deal_breakers": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "energizers": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "drainers": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "urgency": {
+   "type": "string"
+  },
+  "keywords_include": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "keywords_exclude": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "search": {
+   "type": "object",
+   "required": [
+    "queries"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "queries": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "minItems": 1,
+     "maxItems": 6
+    },
+    "location": {
+     "type": "string"
+    },
+    "age": {
+     "type": "string",
+     "enum": [
+      "day",
+      "week",
+      "month"
+     ]
+    },
+    "job_types": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "internship",
+       "full_time",
+       "part_time",
+       "contract",
+       "temporary"
+      ]
+     }
+    },
+    "workplace": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "onsite",
+       "hybrid",
+       "remote"
+      ]
+     }
+    }
+   }
+  }
+ }
+}

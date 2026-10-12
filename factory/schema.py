@@ -15,6 +15,7 @@ KNOWN_TOOLS = {
     "notes.read", "notes.append",
     "srs.add", "srs.due", "srs.review",
     "code.run", "code.check_name",
+    "script.run",
 }
 
 # Which permission each tool needs. Empty/False permission = tool not allowed.
@@ -23,6 +24,7 @@ TOOL_REQUIRES = {
     "fs.write": "fs_write", "fs.move": "fs_write",
     "http.fetch": "network",
     "code.run": "shell", "code.check_name": "shell",
+    "script.run": "shell",
 }
 
 # Small local models get confused with many tools.

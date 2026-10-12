@@ -1,0 +1,242 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "title": "draft",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "job_id",
+  "company",
+  "role",
+  "cv",
+  "cover_letter"
+ ],
+ "properties": {
+  "job_id": {
+   "type": "string",
+   "pattern": "^[a-z]+-[0-9A-Za-z]+$"
+  },
+  "company": {
+   "type": "string",
+   "minLength": 1
+  },
+  "role": {
+   "type": "string",
+   "minLength": 1
+  },
+  "language": {
+   "type": "string",
+   "enum": [
+    "en",
+    "de"
+   ]
+  },
+  "cv": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "headline",
+    "summary"
+   ],
+   "properties": {
+    "headline": {
+     "type": "string"
+    },
+    "summary": {
+     "type": "array",
+     "items": {
+      "anyOf": [
+       {
+        "type": "string",
+        "pattern": "^F\\d{3}$"
+       },
+       {
+        "type": "object",
+        "required": [
+         "text",
+         "source"
+        ],
+        "additionalProperties": false,
+        "properties": {
+         "text": {
+          "type": "string",
+          "minLength": 3
+         },
+         "source": {
+          "type": "string",
+          "pattern": "^(F\\d{3}|S\\d+|E\\d+|ED\\d+|CP\\d+|PRJ-[a-z0-9-]+)$"
+         }
+        }
+       }
+      ]
+     },
+     "minItems": 1,
+     "maxItems": 6
+    },
+    "skills_order": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "pattern": "^S\\d+$"
+     }
+    },
+    "experience": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "required": [
+       "id",
+       "bullets"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "id": {
+        "type": "string",
+        "pattern": "^E\\d+$"
+       },
+       "bullets": {
+        "type": "array",
+        "items": {
+         "anyOf": [
+          {
+           "type": "string",
+           "pattern": "^F\\d{3}$"
+          },
+          {
+           "type": "object",
+           "required": [
+            "text",
+            "source"
+           ],
+           "additionalProperties": false,
+           "properties": {
+            "text": {
+             "type": "string",
+             "minLength": 3
+            },
+            "source": {
+             "type": "string",
+             "pattern": "^(F\\d{3}|S\\d+|E\\d+|ED\\d+|CP\\d+|PRJ-[a-z0-9-]+)$"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "projects": {
+     "type": "array",
+     "maxItems": 5,
+     "items": {
+      "type": "object",
+      "required": [
+       "id",
+       "bullets"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "id": {
+        "type": "string",
+        "pattern": "^(CP\\d+|PRJ-[a-z0-9-]+)$"
+       },
+       "reason": {
+        "type": "string"
+       },
+       "bullets": {
+        "type": "array",
+        "items": {
+         "anyOf": [
+          {
+           "type": "string",
+           "pattern": "^F\\d{3}$"
+          },
+          {
+           "type": "object",
+           "required": [
+            "text",
+            "source"
+           ],
+           "additionalProperties": false,
+           "properties": {
+            "text": {
+             "type": "string",
+             "minLength": 3
+            },
+            "source": {
+             "type": "string",
+             "pattern": "^(F\\d{3}|S\\d+|E\\d+|ED\\d+|CP\\d+|PRJ-[a-z0-9-]+)$"
+            }
+           }
+          }
+         ]
+        },
+        "maxItems": 4
+       }
+      }
+     }
+    }
+   }
+  },
+  "cover_letter": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "subject",
+    "paragraphs"
+   ],
+   "properties": {
+    "recipient": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "subject": {
+     "type": "string"
+    },
+    "salutation": {
+     "type": "string"
+    },
+    "closing": {
+     "type": "string"
+    },
+    "paragraphs": {
+     "type": "array",
+     "minItems": 2,
+     "maxItems": 5,
+     "items": {
+      "type": "object",
+      "required": [
+       "text"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "text": {
+        "type": "string",
+        "minLength": 20
+       },
+       "sources": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "pattern": "^(F\\d{3}|S\\d+|E\\d+|ED\\d+|CP\\d+|PRJ-[a-z0-9-]+)$"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "keyword_gaps": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "notes": {
+   "type": "string"
+  }
+ },
+ "description": "A bullet or summary item is either a bare fact ID like \"F007\" (its text is used word for word) or {text, source} for tailored wording. experience and projects may be left out: the master CV's own bullets are used. A paragraph without sources is checked against all facts."
+}

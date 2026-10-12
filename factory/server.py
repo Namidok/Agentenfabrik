@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from factory.interviewer import SpecBuildError, build_spec, capability_notes, draft_to_spec, permission_warnings, save_spec
-from factory.llm import ProviderError, is_loaded, loaded_models, make_provider, warm
+from factory.llm import ProviderError, is_loaded, loaded_models, make_provider, prefill, warm
 from factory.runtime import AgentSession
 from factory.schema import MAX_TOOLS, TOOL_REQUIRES, AgentSpec, ModelConfig, load_spec
 from factory.scheduler import Cancelled, ModelScheduler
@@ -499,6 +499,18 @@ def _clean(entry: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(entry, default=str))
 
 
+async def _prefill_when_free(session: AgentSession, key: str) -> None:
+    """While the user reads the welcome and types, let Ollama read this agent's system prompt and tools.
+    Only when a slot is free right now: it must never make a real request wait."""
+    if SCHEDULER.busy():
+        return
+    ticket = await SCHEDULER.acquire(key)
+    try:
+        await asyncio.to_thread(prefill, session.provider, session.messages[:1], session.schemas)
+    finally:
+        SCHEDULER.release(ticket)
+
+
 async def _run_turn(ws: WebSocket, session: AgentSession, text: str, events: asyncio.Queue, key: str) -> None:
     async def wait_in_line(position: int, reason: str) -> None:
         await ws.send_json({"event": "queued", "payload": {"position": position, "reason": reason}})
@@ -586,7 +598,7 @@ async def ws_chat(ws: WebSocket, name: str) -> None:
 
     def new_session() -> AgentSession:
         provider = make_provider(model_cfg)
-        apply_options(provider, spec.mode, SETTINGS)
+        apply_options(provider, spec.mode, SETTINGS, writes_files="fs.write" in spec.tools)
         session = AgentSession(spec, provider, base_dir=ROOT, on_event=on_event)
         session.model_cfg = model_cfg  # for the "loading the model" check before a turn
         return session
@@ -599,6 +611,7 @@ async def ws_chat(ws: WebSocket, name: str) -> None:
         return
 
     await ws.send_json({"event": "ready", "payload": {"agent": spec.name, "mode": spec.mode}})
+    warming = asyncio.create_task(_prefill_when_free(session, model_key(model_cfg)))
     turn: asyncio.Task | None = None  # the running turn; messages keep being read meanwhile, for Stop
     try:
         while True:
@@ -639,6 +652,7 @@ async def ws_chat(ws: WebSocket, name: str) -> None:
     except (WebSocketDisconnect, RuntimeError):
         return
     finally:
+        warming.cancel()
         if turn is not None and not turn.done():
             session.cancel.set()  # nobody is listening any more: free the model after this step
             turn.add_done_callback(lambda t: t.cancelled() or t.exception())

@@ -7,3 +7,9 @@ __pycache__/
 __pycache__/
 .pytest_cache/
 .DS_Store
+
+# job application data: personal, never committed
+inputs/
+output/
+templates/selftest/
+templates/fidelity_report_v*.json

@@ -63,3 +63,16 @@ def test_too_much_context_for_a_16gb_mac_is_warned_about():
     warning = memory_warnings(Settings(max_parallel=3), {"qwen3:8b": 8192})
     assert len(warning) == 1 and "24,576" in warning[0]
     assert memory_warnings(Settings(max_parallel=1), {"qwen3:8b": 32768}) == []  # one slot: just a big context
+
+
+def test_reply_cap_is_short_for_chat_and_long_for_tasks_and_file_writers():
+    from factory.settings import NUM_PREDICT, Settings, apply_options
+
+    class P:
+        keep_alive, num_predict = None, None
+
+    for mode, writes, want in (("conversational", False, NUM_PREDICT["conversational"]), ("task", False, NUM_PREDICT["task"]),
+                               ("conversational", True, NUM_PREDICT["task"])):
+        p = P()
+        apply_options(p, mode, Settings(), writes_files=writes)
+        assert p.num_predict == want

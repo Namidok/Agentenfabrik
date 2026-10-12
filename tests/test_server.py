@@ -510,3 +510,20 @@ def test_hiring_warms_the_new_agents_model(client, world, monkeypatch):
     form = {"name": "warm-agent", "goal": "Say hello to people nicely", "mode": "conversational"}
     assert client.post("/api/hire", json=form, headers={"X-AgentFactory": "1"}).status_code == 200
     assert warmed == ["qwen3:8b"]
+
+
+def test_opening_a_chat_prefills_only_when_a_slot_is_free(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "prefill", lambda provider, messages, tools: calls.append(messages[0]["role"]) or True)
+    script(monkeypatch, say("hi"))
+    with client.websocket_connect("ws://127.0.0.1/ws/chat/demo-agent") as ws:
+        ws.receive_json()
+        assert talk(ws, "hello")[-1]["payload"]["text"] == "hi"
+    assert calls == ["system"]  # the system prompt (and tools) were read ahead of the first message
+    calls.clear()
+    busy = server.ModelScheduler(1)
+    monkeypatch.setattr(server, "SCHEDULER", busy)
+    busy.active["other@1"] = 1  # every slot is taken by another agent
+    with client.websocket_connect("ws://127.0.0.1/ws/chat/demo-agent") as ws:
+        ws.receive_json()
+    assert calls == []

@@ -3,6 +3,8 @@
     python scripts/bench.py                    # all three agents, prints the tables
     python scripts/bench.py --agents chat      # one agent
     python scripts/bench.py --json out.json    # also save the raw numbers
+    python scripts/bench.py --agents chat --parallel 2   # two chats at once vs one after the other
+    python scripts/bench.py --legacy           # the old request path: no streaming, no options, no prefill
 
 Agents: the German teacher (specs/german-teacher.yaml, tools + notes + flashcards), a task agent that
 reads files, and a plain chat agent. Everything runs in a temporary folder, so your real notes and
@@ -35,7 +37,7 @@ sys.path.insert(0, str(ROOT))
 
 import httpx  # noqa: E402
 
-from factory.llm import LLMProvider, LLMResponse, make_provider  # noqa: E402
+from factory.llm import LLMProvider, LLMResponse, make_provider, prefill  # noqa: E402
 from factory.runtime import AgentSession, build_system_prompt  # noqa: E402
 from factory.schema import AgentSpec, load_spec  # noqa: E402
 from factory.settings import apply_options, load_settings  # noqa: E402
@@ -75,9 +77,9 @@ def bench_specs() -> dict[str, AgentSpec]:
 class Timed(LLMProvider):
     """Wraps the real provider and remembers every call of the current turn."""
 
-    def __init__(self, inner: LLMProvider) -> None:
+    def __init__(self, inner: LLMProvider, legacy: bool = False) -> None:
         self.inner = inner
-        self.streams = getattr(inner, "streams", False)  # stream exactly when the app would
+        self.streams = getattr(inner, "streams", False) and not legacy  # stream exactly when the app would
         self.calls: list[dict[str, Any]] = []
         self.turn_start = 0.0
 
@@ -137,7 +139,7 @@ def prompt_parts(session: AgentSession) -> dict[str, int]:
             "history": max(0, full - with_tools), "total": full}
 
 
-def run_agent(kind: str, spec: AgentSpec, model: str | None) -> dict[str, Any]:
+def run_agent(kind: str, spec: AgentSpec, model: str | None, parts: bool = True, legacy: bool = False) -> dict[str, Any]:
     base = Path(tempfile.mkdtemp(prefix=f"bench-{kind}-"))
     (base / "sandbox").mkdir()
     for name, text in SANDBOX.items():
@@ -145,20 +147,47 @@ def run_agent(kind: str, spec: AgentSpec, model: str | None) -> dict[str, Any]:
     if model:
         spec = spec.model_copy(update={"model": spec.model.model_copy(update={"name": model})})
     inner = make_provider(spec.model)
-    apply_options(inner, spec.mode, load_settings(ROOT / "settings.yaml")[0])  # the same options the app sends
-    provider = Timed(inner)
+    if not legacy:
+        apply_options(inner, spec.mode, load_settings(ROOT / "settings.yaml")[0], writes_files="fs.write" in spec.tools)  # the same options the app sends
+    provider = Timed(inner, legacy)
     listen = lambda entry: None  # noqa: E731  (a listener, as the web page is one, so replies stream)
     session = AgentSession(spec, provider, base_dir=base, on_event=listen)
+    if not legacy:  # the app reads the system prompt and tools ahead while the chat is open (not timed)
+        prefill(inner, session.messages[:1], session.schemas)
     rows = []
     for text in TURNS[kind]:
         if spec.mode == "task":  # task agents start fresh for every message, as in the app
             session = AgentSession(spec, provider, base_dir=base, on_event=listen)
+            if not legacy:
+                prefill(inner, session.messages[:1], session.schemas)
         provider.calls = []
         provider.turn_start = time.monotonic()
         result = session.send(text)
         rows.append({"turn": text, **turn_row(provider, time.monotonic() - provider.turn_start, result.stop_reason),
                      "reply": result.final_text[:120]})
-    return {"agent": kind, "model": spec.model.name, "turns": rows, "parts": prompt_parts(session)}
+    return {"agent": kind, "model": spec.model.name, "turns": rows, "parts": prompt_parts(session) if parts else None}
+
+
+def run_parallel(kind: str, spec: AgentSpec, model: str | None, n: int) -> None:
+    """The same conversation n times: one after the other, then all at once (needs OLLAMA_NUM_PARALLEL >= n)."""
+    import threading
+    t0 = time.monotonic()
+    for _ in range(n):
+        run_agent(kind, spec, model, parts=False)
+    one_by_one = time.monotonic() - t0
+    results: list[dict[str, Any]] = []
+    threads = [threading.Thread(target=lambda: results.append(run_agent(kind, spec, model, parts=False))) for _ in range(n)]
+    t0 = time.monotonic()
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    together = time.monotonic() - t0
+    per_turn = statistics.mean(r["total"] for res in results for r in res["turns"])
+    speed = statistics.mean(r["tok_s"] for res in results for r in res["turns"])
+    print(f"\n=== {n} x {kind} ===")
+    print(f"one after the other: {one_by_one:6.1f} s   all at once: {together:6.1f} s   ({one_by_one / together:.2f}x)")
+    print(f"while running together: {per_turn:.2f} s per turn, {speed:.1f} tok/s per agent")
 
 
 COLS = ["first_token", "visible", "total", "calls", "prompt_tok", "read_s", "out_tok", "tok_s", "model_s", "overhead_s"]
@@ -194,12 +223,18 @@ def main() -> int:
     ap.add_argument("--model", default=None, help="run every agent on this model instead of its own")
     ap.add_argument("--label", default="run")
     ap.add_argument("--json", default=None, help="save the raw numbers here")
+    ap.add_argument("--parallel", type=int, default=0, help="run each agent this many times at once")
+    ap.add_argument("--legacy", action="store_true", help="the old request path, for a before/after comparison")
     args = ap.parse_args()
     specs = bench_specs()
+    if args.parallel:
+        for kind in args.agents.split(","):
+            run_parallel(kind.strip(), specs[kind.strip()], args.model, args.parallel)
+        return 0
     runs = []
     for kind in args.agents.split(","):
         print(f"... {kind}", file=sys.stderr, flush=True)
-        runs.append(run_agent(kind.strip(), specs[kind.strip()], args.model))
+        runs.append(run_agent(kind.strip(), specs[kind.strip()], args.model, legacy=args.legacy))
     print_tables(runs, args.label)
     if args.json:
         Path(args.json).write_text(json.dumps({"label": args.label, "runs": runs}, indent=1))

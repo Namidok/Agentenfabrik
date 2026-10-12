@@ -37,6 +37,7 @@
     "srs.review": { icon: "card", label: "Grade flashcards", perm: () => "Its own card box" },
     "code.run": { icon: "gear", label: "Run C++ code", perm: () => "On this computer, not isolated" },
     "code.check_name": { icon: "gear", label: "Check C++ names", perm: () => "Compiles a tiny test" },
+    "script.run": { icon: "gear", label: "Run job-search programs", perm: () => "Only the listed programs in scripts/, on this computer" },
   };
   // How a tool call reads inside a reply: [icon, one call, several calls]
   const CALL_WORDS = {
@@ -45,6 +46,7 @@
     srs_review: ["card", "graded card", "graded {n} cards"], fs_read: ["folder", "read {arg}"], fs_list: ["folder", "listed {arg}"],
     fs_write: ["folder", "wrote {arg}"], fs_move: ["folder", "moved {arg}"], http_fetch: ["globe", "read {arg}"],
     code_run: ["gear", "ran code", "ran code {n} times"], code_check_name: ["gear", "checked {arg}"],
+    script_run: ["gear", "ran {arg}", "ran {n} programs"],
   };
 
   const $ = (id) => document.getElementById(id);
@@ -1043,6 +1045,7 @@
     if (typeof args.name === "string") return args.header ? `${args.name} (${args.header})` : args.name;
     if (typeof args.code === "string") return `(${args.code.split("\n").length} lines of C++)`;
     if (typeof args.front === "string") return clip(args.front, 40);
+    if (typeof args.script === "string") return args.script;
     if (typeof args.text === "string") return clip(args.text, 60);
     if (args.id != null) return `card ${args.id}${args.grade ? `: ${args.grade}` : ""}`;
     return Object.keys(args).length ? clip(JSON.stringify(args), 60) : "";

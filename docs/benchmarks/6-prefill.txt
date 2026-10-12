@@ -1,0 +1,4 @@
+without prefill  first turn: first token 11.03s, text visible 11.03s, total 12.51s
+with prefill     first turn: first token  1.19s, text visible  1.19s, total  2.70s   (prefill ran 10.2s earlier, while the chat was open)
+without prefill  first turn: first token 11.02s, text visible 11.02s, total 12.52s
+with prefill     first turn: first token  1.16s, text visible  1.16s, total  2.64s   (prefill ran 10.2s earlier, while the chat was open)

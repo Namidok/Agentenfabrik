@@ -35,10 +35,13 @@ class ToolContext:
         """Return the resolved path if it is inside an allowed folder, else raise."""
         if not raw:
             raise ToolError("Missing required argument: path")
-        target = self._resolve(str(raw))
-        for root_raw in getattr(self.spec.permissions, kind):
-            root = self._resolve(root_raw)
-            if target == root or target.is_relative_to(root):
+        roots = [self._resolve(r) for r in getattr(self.spec.permissions, kind)]
+        candidates = [self._resolve(str(raw))]
+        if str(raw).startswith("/"):
+            # Small models often drop the dot: "/output/drafts/x" meant "./output/drafts/x". Still only inside allowed folders.
+            candidates.append(self._resolve("./" + str(raw).lstrip("/")))
+        for target in candidates:
+            if any(target == root or target.is_relative_to(root) for root in roots):
                 return target
         raise ToolError(f"Permission denied: '{raw}' is outside the allowed folders.")
 
@@ -301,6 +304,12 @@ def build_tools(spec: AgentSpec) -> dict[str, Tool]:
 from factory import srs as _srs  # noqa: E402
 
 for _tool_id, (_description, _parameters, _func) in _srs.TOOLS.items():
+    IMPLEMENTED[_tool_id] = Tool(_tool_id, _description, _parameters, _func)
+
+# Allowlisted job-search programs; the runner lives in factory/script_tool.py.
+from factory import script_tool as _script_tool  # noqa: E402
+
+for _tool_id, (_description, _parameters, _func) in _script_tool.TOOLS.items():
     IMPLEMENTED[_tool_id] = Tool(_tool_id, _description, _parameters, _func)
 
 if "notes.read" not in IMPLEMENTED:

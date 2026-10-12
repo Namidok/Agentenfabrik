@@ -1,0 +1,61 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "title": "review",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "job_id",
+  "draft",
+  "verdict",
+  "issues"
+ ],
+ "properties": {
+  "job_id": {
+   "type": "string"
+  },
+  "draft": {
+   "type": "string"
+  },
+  "verdict": {
+   "type": "string",
+   "enum": [
+    "approve",
+    "revise"
+   ]
+  },
+  "issues": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "kind",
+     "where",
+     "problem"
+    ],
+    "additionalProperties": false,
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "no_source",
+       "invented",
+       "weak_language",
+       "keyword_gap",
+       "too_long",
+       "other"
+      ]
+     },
+     "where": {
+      "type": "string"
+     },
+     "problem": {
+      "type": "string"
+     },
+     "suggestion": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ }
+}

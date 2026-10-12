@@ -226,3 +226,18 @@ def test_warming_loads_the_model_with_the_agents_context_size():
     client = httpx.Client(transport=httpx.MockTransport(handler))
     assert warm(ModelConfig(name="qwen3:8b", num_ctx=8192), "30m", client=client) is True
     assert seen == {"model": "qwen3:8b", "prompt": "", "stream": False, "options": {"num_ctx": 8192}, "keep_alive": "30m"}
+
+
+def test_prefill_reads_the_prompt_and_writes_one_token():
+    from factory.llm import prefill
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return reply({"content": "x"})
+    p = provider_with(handler, num_predict=768)
+    tools = [{"type": "function", "function": {"name": "srs_due", "parameters": {"type": "object", "properties": {}}}}]
+    assert prefill(p, [{"role": "system", "content": "You teach German."}], tools) is True
+    assert seen["options"]["num_predict"] == 1 and seen["tools"] == tools and seen["messages"][0]["content"] == "You teach German."
+    assert p.num_predict == 768  # put back for the real requests
+    assert prefill(MockProvider([]), [], None) is False  # only for Ollama

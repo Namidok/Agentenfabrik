@@ -122,7 +122,7 @@ def draft_to_spec(d: dict[str, Any]) -> AgentSpec:
         "system_prompt": d.get("system_prompt", ""),
         "mode": d.get("mode", "task"),
         "tools": d.get("tools", []),
-        "permissions": {"fs_read": d.get("fs_read", []), "fs_write": d.get("fs_write", []), "network": d.get("network", []), "shell": any(t.startswith("code.") for t in d.get("tools", []))},
+        "permissions": {"fs_read": d.get("fs_read", []), "fs_write": d.get("fs_write", []), "network": d.get("network", []), "shell": any(t.startswith(("code.", "script.")) for t in d.get("tools", []))},
         "memory": {"notes": any(t.startswith("notes.") for t in d.get("tools", []))},
         "trigger": trigger,
     })
@@ -183,8 +183,10 @@ def permission_warnings(spec: AgentSpec, base_dir: str | Path | None = None) -> 
             warnings.append("It is allowed to replace existing files.")
     if spec.permissions.network:
         warnings.append(f"This agent can access the internet, limited to: {', '.join(spec.permissions.network)}.")
-    if spec.permissions.shell:
+    if spec.permissions.shell and any(t.startswith("code.") for t in spec.tools):
         warnings.append("This agent can compile and run code on your computer. It is not isolated, so that code could read your files or use the network.")
+    elif spec.permissions.shell:
+        warnings.append("This agent can start the listed programs in scripts/ on your computer; some of them use the internet.")
     return warnings
 
 

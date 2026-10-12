@@ -17,7 +17,7 @@
   const TOOL_NAMES = {
     "fs.list": "Look inside folders", "fs.read": "Read text files", "fs.write": "Create files",
     "fs.move": "Move files", "http.fetch": "Read web pages", "notes.read": "Read its own notes",
-    "notes.append": "Remember things", "code.run": "Compile and run C++", "code.check_name": "Check C++ names",
+    "notes.append": "Remember things", "code.run": "Compile and run C++", "code.check_name": "Check C++ names", "script.run": "Run job-search programs",
     "srs.add": "Add flashcards", "srs.due": "Find due flashcards", "srs.review": "Record reviews",
   };
   const FIELD_IDS = {

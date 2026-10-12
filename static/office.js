@@ -47,11 +47,11 @@
     fs: { label: "FILES", color: "#8c7cf6", name: "File cabinet", what: "Reads and writes files, only in the folders each agent may use" },
     http: { label: "WEB", color: "#4da3ff", name: "Web terminal", what: "Reads pages, only on the websites each agent may visit" },
     notes: { label: "NOTES", color: "#fdcb6e", name: "Notes shelf", what: "Keeps notes between chats" },
-    code: { label: "BUILD", color: "#ff9f5a", name: "Build machine", what: "Compiles and runs C++ on this computer" },
+    code: { label: "BUILD", color: "#ff9f5a", name: "Build machine", what: "Compiles and runs C++ and the job-search programs on this computer" },
     srs: { label: "CARDS", color: "#7bd88f", name: "Flashcard box", what: "Flashcards that come back at the right time" },
   };
   const STATION_ORDER = ["fs", "http", "notes", "code", "srs"];
-  const stationOf = (tool) => { const key = String(tool || "").split(/[._]/)[0]; return STATIONS[key] ? key : null; };
+  const stationOf = (tool) => { let key = String(tool || "").split(/[._]/)[0]; if (key === "script") key = "code"; return STATIONS[key] ? key : null; };
 
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
   const agents = new Map();
