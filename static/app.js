@@ -627,8 +627,8 @@
       return el("span", { class: "chip", title: t }, icon(info.icon), info.label);
     });
     const problem = problemOf(agent);
-    const prompts = agent.mode === "task"
-      ? ["What can you do?"]
+    const prompts = agent.name === JOB_DESK ? ["Search for jobs", "What can you do?"]
+      : agent.mode === "task" ? ["What can you do?"]
       : ["What can you do?", agent.has_notes ? "Let's continue where we left off." : "Let's get started."];
     chat.starters = el("div", { class: "starters" }, prompts.map((text) =>
       el("button", { type: "button", class: "btn starter", text, title: "Send this as your first message", onclick: () => sendMessage(chat, text) })));
@@ -765,6 +765,7 @@
         addReply(chat, payload);
         chat.lastRun = payload;
         if (visible(chat) && !$("cards-drawer").hidden) loadCards();
+        if (chat.agent === JOB_DESK) pollRun(800);
         Office.setMeter(chat.agent, payload.tokens || 0, tokenLimit(chat));
         Office.setAlert(chat.agent, payload.ok ? "" : `Last run stopped early: ${STOP_REASONS[payload.stop_reason] || payload.stop_reason}`);
         Office.say(chat.agent, payload.ok ? "Done!" : payload.stop_reason === "stopped" ? "OK, stopped" : "Stopped early", 3);
@@ -1013,6 +1014,7 @@
     closeCards();
     closeChatMenu();
     renderHeader(agent);
+    renderRun();
     renderRoster();
     $("composer-input").value = chat.draft;
     autosize();
@@ -1034,6 +1036,185 @@
     Office.select(null);
     renderRoster();
     updateComposer();
+  }
+
+  // ---------- job search run (the panel in Job Desk's chat) ----------
+  //
+  // One run does the whole search: Job Desk searches, Job Matcher ranks, then the good matches wait for your OK;
+  // after it, CV Writer, CV Reviewer and the PDF printer go one after another. The run is a separate process on
+  // the server (scripts/jobs/pipeline.py); this panel starts it, follows data/jobs/run_status.json, sends the OK
+  // and shows the agent at work in the office.
+
+  const JOB_DESK = "job-desk";
+  const RUN_STEPS = [
+    { key: "job-desk", label: "Search" }, { key: "job-matcher", label: "Match" }, { key: "ok", label: "Your OK" },
+    { key: "application-writer", label: "Write" }, { key: "application-reviewer", label: "Review" }, { key: "pdf", label: "PDFs" },
+  ];
+  const jobRun = { status: null, timer: 0, atWork: null, sending: false, picks: new Map(), seen: "", drawn: "", logOpen: false };
+
+  // Which step of the strip the run is on: 0-5, and how far it got.
+  function runStep(s) {
+    if (!s || s.state === "idle") return -1;
+    if (s.state === "waiting") return 2;
+    if (s.kind === "documents") {
+      if (s.state !== "running") return 6;
+      if (s.agent === "application-writer") return 3;
+      if (s.agent === "application-reviewer") return 4;
+      return /printing/.test(s.detail || "") ? 5 : 3;
+    }
+    if (s.state !== "running") return 2;
+    return s.agent === "job-matcher" ? 1 : 0;
+  }
+
+  async function pollRun(soon) {
+    clearTimeout(jobRun.timer);
+    if (soon) { jobRun.timer = setTimeout(() => pollRun(), soon); return; }
+    try {
+      jobRun.status = await getJSON("/api/jobs/run");
+    } catch { /* the server is restarting: try again below */ }
+    const s = jobRun.status || { state: "idle" };
+    showRunInOffice(s);
+    announceRun(s);
+    const drawn = JSON.stringify(s);
+    if (drawn !== jobRun.drawn || s.state === "running") renderRun(); // a quiet panel keeps your focus and ticks
+    jobRun.drawn = drawn;
+    jobRun.timer = setTimeout(() => pollRun(), s.state === "running" ? 2500 : document.hidden ? 60000 : 15000);
+  }
+
+  function showRunInOffice(s) {
+    const agent = s.state === "running" ? s.agent : null;
+    if (jobRun.atWork && jobRun.atWork !== agent) {
+      const chat = state.chats.get(jobRun.atWork);
+      Office.setStatus(jobRun.atWork, chat ? chat.status : "idle");
+    }
+    jobRun.atWork = agent;
+    if (!agent) return;
+    const chat = state.chats.get(agent);
+    if (chat && chat.busy) return; // its own chat turn shows instead
+    Office.setStatus(agent, "working");
+    Office.say(agent, clip(String(s.detail || "Working").replace(/^[A-Za-z ]+: /, ""), 40), 4);
+  }
+
+  // A toast once when a run needs you or has finished, wherever you are in the app.
+  function announceRun(s) {
+    const key = `${s.state}|${s.updated || ""}`;
+    const first = jobRun.seen === "";
+    if (key === jobRun.seen) return;
+    jobRun.seen = key;
+    const open = { label: "Open Job Desk", run: () => selectAgent(JOB_DESK) };
+    const here = state.current === JOB_DESK && !$("chat-section").hidden;
+    if (s.state === "waiting" && !here) toast("Job search: your OK needed", clip(s.detail || "", 120), "info", { icon: "search", action: open });
+    else if (first) return; // an old result is no news
+    else if (s.state === "done" && !here) toast("Job search finished", clip(s.detail || "", 120), "ok", { icon: "check", action: open });
+    else if (s.state === "failed" && !here) toast("Job search stopped", clip(s.detail || "", 120), "bad", { action: open });
+  }
+
+  async function postRun(url, body) {
+    jobRun.sending = true;
+    renderRun();
+    try {
+      const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "X-AgentFactory": "1" },
+        body: JSON.stringify(body || {}) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `The server answered ${response.status}.`);
+      jobRun.status = { ...(jobRun.status || {}), state: "running", agent: "job-desk", detail: "Starting", log: [],
+        kind: body && (body.approve || body.decline) ? "documents" : "search", started: new Date().toISOString() };
+    } catch (e) {
+      toast("Could not start the run", e.message, "bad");
+    } finally {
+      jobRun.sending = false;
+      renderRun();
+      pollRun(1200);
+    }
+  }
+
+  const startSearch = () => postRun("/api/jobs/run");
+  function sendChoice(all) {
+    const waiting = (jobRun.status && jobRun.status.waiting) || [];
+    const approve = all ? [] : waiting.filter((w) => jobRun.picks.get(w.id)).map((w) => w.id);
+    const decline = waiting.map((w) => w.id).filter((id) => !approve.includes(id));
+    postRun("/api/jobs/choose", { approve, decline });
+  }
+
+  const fileLink = (path, text) => el("a", { class: "btn btn-sm", href: `/api/jobs/file?path=${encodeURIComponent(path)}`, target: "_blank", rel: "noopener" }, icon("file"), text);
+
+  function elapsed(s) {
+    const from = Date.parse(s.started || "");
+    if (!from) return "";
+    const end = s.state === "running" ? Date.now() : Date.parse(s.updated || "") || Date.now();
+    const min = Math.max(0, Math.round((end - from) / 60000));
+    return min < 1 ? "under a minute" : `${min} min`;
+  }
+
+  function renderRun() {
+    const box = $("jobrun");
+    const show = state.current === JOB_DESK;
+    box.hidden = !show;
+    if (!show) return;
+    const s = jobRun.status || { state: "idle" };
+    const running = s.state === "running";
+    const step = runStep(s);
+    const strip = el("ol", { class: "run-steps", "aria-label": "Steps of the run" }, RUN_STEPS.map((r, i) => {
+      const cls = step < 0 ? "" : i < step ? "done" : i === step ? (s.state === "waiting" ? "ask" : running ? "now" : "done") : "";
+      return el("li", { class: cls, style: r.key.includes("-") ? `--agent:${colorOf(r.key)}` : null, "aria-current": i === step ? "step" : null },
+        r.key.includes("-") ? el("span", { class: "run-dot", "aria-hidden": "true" }) : icon(r.key === "ok" ? "check" : "file"),
+        el("span", { text: r.label }));
+    }));
+
+    let title = "Job search", line = "Searches LinkedIn, ranks the jobs, then asks before writing any CV.", body = null;
+    const actions = [];
+    const search = (label) => el("button", { type: "button", class: "btn btn-sm btn-primary", disabled: jobRun.sending || running,
+      onclick: startSearch }, icon("search"), label);
+    if (running) {
+      title = s.kind === "documents" ? "Writing your documents" : "Searching";
+      line = `${s.detail || "Starting"} · ${elapsed(s)}`;
+      const lines = (s.log || []).slice(-6);
+      if (lines.length) body = el("details", { class: "run-log", open: jobRun.logOpen, ontoggle: (e) => { jobRun.logOpen = e.target.open; } },
+        el("summary", { text: "What happened so far" }), el("pre", { text: lines.join("\n") }));
+    } else if (s.state === "waiting") {
+      title = "Make CVs?";
+      line = s.detail || "";
+      for (const w of s.waiting || []) if (!jobRun.picks.has(w.id)) jobRun.picks.set(w.id, !!w.pick);
+      const count = (s.waiting || []).filter((w) => jobRun.picks.get(w.id)).length;
+      body = el("div", {},
+        el("ul", { class: "run-jobs" }, (s.waiting || []).map((w) => {
+          const box = el("input", { type: "checkbox", checked: !!jobRun.picks.get(w.id),
+            onchange: () => { jobRun.picks.set(w.id, box.checked); renderRun(); } });
+          return el("li", {}, el("label", { class: "run-job" }, box,
+            el("span", {}, el("strong", { text: `${w.company} – ${w.title}` }),
+              el("small", { text: [w.fit != null ? `fit ${w.fit}` : "", (w.location || "").split(",")[0], w.reason].filter(Boolean).join(" · ") }))),
+          w.link ? el("a", { class: "btn btn-sm btn-quiet", href: w.link, target: "_blank", rel: "noopener noreferrer", title: "Open the posting" }, icon("globe")) : null);
+        })),
+        el("p", { class: "muted run-note", text: "Unticked jobs are skipped and not offered again. Nothing is sent anywhere." }));
+      actions.push(el("button", { type: "button", class: "btn btn-sm btn-primary", disabled: jobRun.sending || !count,
+        onclick: () => sendChoice(false) }, icon("check"), count === 1 ? "Make 1 CV" : `Make ${count} CVs`));
+      actions.push(el("button", { type: "button", class: "btn btn-sm", disabled: jobRun.sending, onclick: () => sendChoice(true) }, "Skip all"));
+    } else if (s.state === "done" || s.state === "idle" && s.detail) {
+      title = s.kind === "documents" ? "Documents ready" : "Search done";
+      line = `${s.detail || ""}${s.updated ? ` · ${new Date(s.updated).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}` : ""}`;
+      const files = (s.result && s.result.files) || [];
+      const report = s.result && s.result.report;
+      body = el("div", {},
+        files.length ? el("ul", { class: "run-jobs" }, files.map((f) => el("li", { class: "run-file" },
+          el("span", {}, el("strong", { text: `${f.company} – ${f.title}` }),
+            f.problems && f.problems.length ? el("small", { class: "warn", text: `Check: ${f.problems.join("; ")}` }) : el("small", { text: "Checked, no problems found" })),
+          el("span", { class: "run-links" }, f.cv ? fileLink(f.cv, "CV") : null, f.cover_letter ? fileLink(f.cover_letter, "Letter") : null)))) : null,
+        report ? el("p", { class: "run-note" }, fileLink(report, "Full report")) : null,
+        (s.result && s.result.problems || []).length ? el("div", { class: "callout is-warn" }, el("strong", { text: "Problems" }), s.result.problems.join("; ")) : null);
+      actions.push(search("Search again"));
+    } else if (s.state === "failed") {
+      title = "The run stopped";
+      body = el("div", { class: "callout is-bad" }, s.detail || "Something went wrong.");
+      line = "";
+      actions.push(search("Try again"));
+    } else {
+      actions.push(search("Search for jobs"));
+    }
+    box.replaceChildren(
+      el("div", { class: "run-head" },
+        el("div", { class: "run-title" }, el("h3", { class: "px", text: title }), line ? el("p", { class: "muted", text: line }) : null),
+        el("div", { class: "run-actions" }, actions)),
+      strip, body);
   }
 
   // ---------- activity log ----------
@@ -1334,6 +1515,6 @@
   });
   Palette.init({ items: paletteItems });
   loadConfig();
-  loadAgents().then(() => Nova.boot());
+  loadAgents().then(() => { Nova.boot(); pollRun(); });
   setInterval(() => { if (!document.hidden) loadAgents(); }, 8000); // new or removed spec files show up on their own
 })();

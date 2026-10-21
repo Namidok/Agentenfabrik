@@ -1,8 +1,8 @@
-"""Start the whole automatic run (pipeline.py) now, in the background, and return at once.
+"""Start a run of pipeline.py now, in the background, and return at once.
 
-The run takes about 5-25 minutes; a Mac notification says when it is done, and the report is in output/runs/.
-Arguments (JSON, optional): passed on to pipeline.py, for example {"jobs": ["li-123"]} to only (re)rank and
-write for those jobs without searching.
+{} searches and ranks (about 5-25 minutes), then the good matches wait for the user's OK in the Job Desk panel.
+{"approve": [IDs], "decline": [IDs]} writes, checks and prints the documents for the approved jobs.
+{"jobs": ["li-123"]} only (re)ranks those jobs without searching. A Mac notification says when a run is done.
 Prints: {"ok", "started", "log"} or {"ok": false, "error"}"""
 from __future__ import annotations
 

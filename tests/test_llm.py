@@ -239,5 +239,101 @@ def test_prefill_reads_the_prompt_and_writes_one_token():
     tools = [{"type": "function", "function": {"name": "srs_due", "parameters": {"type": "object", "properties": {}}}}]
     assert prefill(p, [{"role": "system", "content": "You teach German."}], tools) is True
     assert seen["options"]["num_predict"] == 1 and seen["tools"] == tools and seen["messages"][0]["content"] == "You teach German."
-    assert p.num_predict == 768  # put back for the real requests
+    assert p.num_predict == 768  # untouched for the real requests
     assert prefill(MockProvider([]), [], None) is False  # only for Ollama
+
+
+def test_a_message_sent_during_prefill_keeps_its_reply_cap():
+    """The first message of a chat can run while the prefill is still going (2 slots): it must not get 1 token."""
+    from factory.llm import prefill
+    caps = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        caps.append(body["options"]["num_predict"])
+        if body["messages"][-1]["content"] == ".":  # the prefill: the user's message arrives meanwhile
+            p.chat([{"role": "user", "content": "Which step are we on?"}])
+        return reply({"content": "x"})
+    p = provider_with(handler, num_predict=1024)
+    assert prefill(p, [{"role": "system", "content": "You are Job Desk."}], None) is True
+    assert caps == [1, 1024]
+
+
+# ---------- tools as text (Ollama's own tool parsing cuts some calls off) ----------
+
+from factory.llm import ToolCall  # noqa: E402
+
+TOOLS = [{"type": "function", "function": {"name": "script_run", "parameters": {"type": "object", "properties": {"script": {"type": "string"}}}}}]
+CALL = '<tool_call>\n{"name": "script_run", "arguments": {"script": "run_now", "args": {}}}\n</tool_call>'
+
+
+def test_tools_as_text_go_into_the_system_prompt_and_calls_come_back_from_the_text():
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return reply({"content": CALL})
+    p = provider_with(handler, tools_as_text=True)
+    r = p.chat([{"role": "system", "content": "You are Job Desk."}, {"role": "user", "content": "search for jobs"}], tools=TOOLS)
+    assert "tools" not in seen
+    system = seen["messages"][0]["content"]
+    assert system.startswith("You are Job Desk.\n\n# Tools") and '"name": "script_run"' in system and "<tool_call>" in system
+    assert r.content == "" and r.tool_calls == [ToolCall("script_run", {"script": "run_now", "args": {}})]
+
+
+def test_tools_as_text_without_a_system_message_and_with_plain_replies():
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return reply({"content": "Hello, I run your job search."})
+    r = provider_with(handler, tools_as_text=True).chat([{"role": "user", "content": "hi"}], tools=TOOLS)
+    assert seen["messages"][0]["role"] == "system" and seen["messages"][0]["content"].startswith("# Tools")
+    assert r.content == "Hello, I run your job search." and r.tool_calls == []
+
+
+def test_calls_from_text_reads_several_calls_and_an_unfinished_one():
+    from factory.llm import calls_from_text
+    text = ('Starting.\n<tool_call>\n{"name": "a", "arguments": {"x": 1}}\n{"name": "b", "arguments": "{\\"y\\": 2}"}\n</tool_call>'
+            '<tool_call>\n{"name": "c", "arguments": {}}')
+    content, calls = calls_from_text(text)
+    assert content == "Starting." and [(c.name, c.arguments) for c in calls] == [("a", {"x": 1}), ("b", {"y": 2}), ("c", {})]
+    assert calls_from_text("<tool_call>\nnot json\n</tool_call>") == ("", [])
+
+
+def test_streamed_tool_call_text_is_never_shown_and_the_call_is_found():
+    pieces = ["I will ", "start it.", "\n<tool", "_call>\n{\"name\": \"script_run\", ", "\"arguments\": {\"script\": \"run_now\"}}\n</tool_call>"]
+
+    def handler(request):
+        lines = [json.dumps({"message": {"content": x}, "done": False}) for x in pieces]
+        lines.append(json.dumps({"message": {"content": ""}, "done": True, "done_reason": "stop"}))
+        return httpx.Response(200, text="\n".join(lines))
+    shown, seen_calls = [], []
+    r = provider_with(handler, tools_as_text=True).chat([{"role": "user", "content": "go"}], tools=TOOLS,
+                                                       on_token=shown.append, on_call=seen_calls.append)
+    assert "".join(shown) == "I will start it.\n" and "<" not in "".join(shown)
+    assert r.content == "I will start it." and [c.name for c in r.tool_calls] == ["script_run"] == [c.name for c in seen_calls]
+
+
+def test_a_streamed_reply_that_only_looks_like_a_tool_call_is_shown_in_full():
+    def handler(request):
+        lines = [json.dumps({"message": {"content": x}, "done": False}) for x in ("Use a <t", "able> tag")]
+        lines.append(json.dumps({"message": {"content": ""}, "done": True}))
+        return httpx.Response(200, text="\n".join(lines))
+    shown = []
+    r = provider_with(handler, tools_as_text=True).chat([{"role": "user", "content": "go"}], tools=TOOLS, on_token=shown.append)
+    assert "".join(shown) == "Use a <table> tag" == r.content
+
+
+def test_on_call_can_end_a_text_tool_reply_early():
+    pieces = ['<tool_call>\n{"name": "a", "arguments": {}}\n</tool_call>', '<tool_call>\n{"name": "b", "arguments": {}}\n</tool_call>']
+
+    def handler(request):
+        return httpx.Response(200, text="\n".join(json.dumps({"message": {"content": x}, "done": False}) for x in pieces))
+    r = provider_with(handler, tools_as_text=True).chat([{"role": "user", "content": "go"}], tools=TOOLS, on_call=lambda c: False)
+    assert [c.name for c in r.tool_calls] == ["a"] and r.done_reason == "early"
+
+
+def test_make_provider_uses_tools_as_text():
+    from factory.llm import make_provider
+    assert make_provider(ModelConfig(name="qwen3:8b")).tools_as_text is True

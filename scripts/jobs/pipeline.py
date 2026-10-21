@@ -1,19 +1,23 @@
-"""The whole job search in one run: started every 3 hours by macOS (see schedule.py), from Job Desk ("run now"),
-or by hand:  .venv/bin/python scripts/jobs/pipeline.py ['{"jobs": ["li-123"], "skip_scrape": true}']
+"""The whole job search: started every 3 hours by macOS (see schedule.py), from the Job Desk panel in the app or
+its chat ("search for jobs"), or by hand:  .venv/bin/python scripts/jobs/pipeline.py ['{"jobs": ["li-123"]}']
 
+Search run ({} or {"jobs": [...]}):
   1. Job Desk      search LinkedIn: the last 24 h on the first run of a day, otherwise since the last run
                    (seen jobs are skipped), then the keyword score of every new job
   2. Job Matcher   rank each new job against your profile: requirements, the facts that show them, gaps, fit 0-100
-  3. CV Writer     for each good match (verdict apply, fit >= min_fit, German not a blocker): pick the facts for
-                   the CV, then write the cover letter
-  4. CV Reviewer   program checks (numbers, generic words, invented availability, length) and a model review;
+  3. wait          the good matches (verdict apply, fit >= min_fit, German not a blocker) wait for your OK in the
+                   Job Desk panel; a Mac notification says so. No document is written without it.
+Documents run ({"approve": [ids], "decline": [ids]}), started by your OK:
+  4. CV Writer     pick the facts for the CV, then write the cover letter
+  5. CV Reviewer   program checks (numbers, generic words, invented availability, length) and a model review;
                    one revision round; anything still unsupported is removed
-  5. render        both PDFs in the master CV design, a row in output/tracker.csv
-  6. report        output/runs/<date>_<time>.md, the ranked list (output/ranked_jobs.md and data/jobs/ranked.md),
-                   a line in Job Desk's notes, and a Mac notification. Nothing is ever sent anywhere.
+  6. render        both PDFs in the master CV design, a row in output/tracker.csv
+Declined jobs get a note and are not offered again. Every run ends with a report in output/runs/<date>_<time>.md,
+the ranked list (output/ranked_jobs.md and data/jobs/ranked.md), a line in Job Desk's notes and a Mac notification.
+Nothing is ever sent anywhere. data/jobs/run_status.json says what is happening, for the app.
 
 Settings (optional) in the preferences: "availability": "from March 2027 for 6 months", and
-"automation": {"min_fit": 70, "max_drafts_per_run": 3, "max_matches_per_run": 12}.
+"automation": {"min_fit": 70, "max_drafts_per_run": 3 (how many are ticked for you), "max_matches_per_run": 12}.
 The last printed line is a JSON summary (for script.run)."""
 from __future__ import annotations
 
@@ -36,14 +40,39 @@ HERE = Path(__file__).resolve().parent
 MATCHES = DATA / "matches"
 STATE = DATA / "pipeline_state.json"
 LOCK = DATA / "pipeline.lock"
+STATUS = DATA / "run_status.json"
 RUNS = OUTPUT / "runs"
 DEFAULTS = {"min_fit": 70, "max_drafts_per_run": 3, "max_matches_per_run": 12, "min_keyword_score": 40}
 SKIP_FLAGS = {"excluded_keyword", "senior"}
 GERMAN_OK = {"B2", "C1", "C2", "native"}
+DECLINED = "you chose not to make documents for it"
+LIVE = {"on": False}  # while a run goes, log lines also reach the app
 
 
-def log(message: str) -> None:
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", flush=True)
+def read_status() -> dict[str, Any]:
+    try:
+        return read_json(STATUS)
+    except (OSError, ValueError):
+        return {}
+
+
+def set_status(**changes: Any) -> None:
+    """What the Job Desk panel shows: state (running, waiting, done, failed, idle), the agent at work, recent lines."""
+    status = {**read_status(), **changes, "updated": datetime.now().isoformat(timespec="seconds")}
+    STATUS.parent.mkdir(parents=True, exist_ok=True)
+    part = STATUS.with_suffix(".part")
+    part.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
+    part.replace(STATUS)  # the app never reads half a file
+
+
+def log(message: str, agent: str | None = None) -> None:
+    line = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
+    print(line, flush=True)
+    if LIVE["on"]:
+        changes: dict[str, Any] = {"detail": message.strip(), "log": (read_status().get("log") or [])[-11:] + [line]}
+        if agent:
+            changes["agent"] = agent
+        set_status(**changes)
 
 
 def run_script(name: str, arguments: dict[str, Any], timeout: int = 900) -> dict[str, Any]:
@@ -121,7 +150,7 @@ def make_documents(job: dict, match: dict, profile: dict, catalogue: dict | None
 
     ratings = agents.relevance(job, match, profile, repos)
     chosen = agents.select_cv(ratings, profile, repos)
-    log("  CV Writer: headline and summary")
+    log(f"  CV Writer: {company}, headline and summary", "application-writer")
     focus, summary = agents.write_summary(writer, job, profile, chosen["summary_ids"])
     from render import unsupported_numbers
     summary = [s["source"] if isinstance(s, dict) and unsupported_numbers(s["text"], [s["source"]], texts, f"{company} {role}") else s
@@ -129,15 +158,15 @@ def make_documents(job: dict, match: dict, profile: dict, catalogue: dict | None
     cv = {"headline": agents.headline(profile, focus), "summary": summary, **chosen["cv"]}
     evidence = chosen["evidence"]
 
-    log("  CV Writer: cover letter")
+    log(f"  CV Writer: {company}, cover letter", "application-writer")
     parts = agents.write_parts(writer, job, match, profile, evidence)
-    log("  CV Reviewer: checking every part")
+    log(f"  CV Reviewer: {company}, checking every part", "application-reviewer")
     problems = agents.part_problems(parts, evidence, texts, company, role, availability)
     flagged = agents.review_parts(reviewer, job, parts, profile, evidence)
     redo = {k: "; ".join(x for x in (problems.get(k), flagged.get(k)) if x) for k in {**problems, **flagged}}
     rounds = 0
     if redo:
-        log(f"  CV Writer: rewriting {', '.join(sorted(redo))}")
+        log(f"  CV Writer: {company}, rewriting {', '.join(sorted(redo))}", "application-writer")
         parts = agents.write_parts(writer, job, match, profile, evidence, redo=redo, previous=parts)
         rounds = 1
     paragraphs = agents.assemble_letter(parts, company, role, evidence, availability)
@@ -156,7 +185,7 @@ def make_documents(job: dict, match: dict, profile: dict, catalogue: dict | None
         "relevance": {k: round(v, 1) for k, v in sorted(ratings.items(), key=lambda x: -x[1])},
         "evidence": chosen["evidence"], "program_checks": problems, "model_review": flagged, "revision_rounds": rounds,
         "removed_sentences": removed, "remaining": remaining})
-    log("  render: printing both PDFs")
+    log(f"  Job Desk: {company}, printing both PDFs", "job-desk")
     printed = run_script("render", {"draft": rel(draft_path)}, timeout=300)
     return {"draft": rel(draft_path), "review": rel(review_path), "cv": printed.get("cv", ""),
             "cover_letter": printed.get("cover_letter", ""), "rounds": rounds, "removed": len(removed),
@@ -183,7 +212,8 @@ def all_matches() -> list[dict]:
     return sorted(records, key=lambda r: (r.get("verdict") != "apply", -(r.get("fit") or 0)))
 
 
-def write_reports(summary: dict[str, Any], new_records: list[dict], made: list[dict], stamp: str) -> Path:
+def write_reports(summary: dict[str, Any], new_records: list[dict], made: list[dict], stamp: str,
+                  waiting: list[dict] | None = None) -> Path:
     OUTPUT.mkdir(parents=True, exist_ok=True)
     DATA.mkdir(parents=True, exist_ok=True)
     every = all_matches()
@@ -201,6 +231,9 @@ def write_reports(summary: dict[str, Any], new_records: list[dict], made: list[d
     hidden = len(new_records) - len(shown)
     lines += ["## New internships this run, ranked", "", ranked_table(shown) if shown else "No new matching internships.",
               "", f"{hidden} other new jobs hidden (not a match, or not an AI/ML/data internship).", ""]
+    if waiting:
+        lines += ["## Waiting for your OK (Job Desk panel in the app)", ""]
+        lines += [f"- {w['id']} **{w['company']} – {w['title']}** (fit {w['fit']})" for w in waiting] + [""]
     if made:
         lines += ["## Documents to check (nothing has been sent)", ""]
         for m in made:
@@ -240,140 +273,208 @@ def note_for_job_desk(text: str) -> None:
 
 # ---------- the run ----------
 
+def sane(record: dict, settings: dict[str, Any]) -> bool:
+    """The model's fit is generous; documents need the program's keyword check to agree as well."""
+    flags = set(record.get("flags") or [])
+    not_intern = "not_internship" in flags and "working_student" not in flags
+    return (record.get("keyword_score") or 0) >= settings["min_keyword_score"] and not {"role_not_in_title", "not_wanted"} & flags \
+        and not not_intern and not SKIP_FLAGS & flags
+
+
+def pick_candidates(new_records: list[dict], settings: dict[str, Any], prefs: dict, only: list[str] | None) -> list[dict]:
+    """The good matches that have no documents yet and were not declined, best first. Jobs whose posting asks for
+    good German get a note instead, unless the preferences say you have it."""
+    fresh = {x["id"] for x in new_records}
+    earlier = [r for r in all_matches() if r["id"] not in fresh and not r.get("documents") and not r.get("note")
+               and (not only or r["id"] in only)]
+    good = sorted((r for r in new_records + earlier if r.get("verdict") == "apply" and (r.get("fit") or 0) >= settings["min_fit"]
+                   and sane(r, settings)), key=lambda r: -((r.get("fit") or 0) + 0.2 * (r.get("keyword_score") or 0)))
+    german, chosen = speaks_german(prefs), []
+    for record in good:
+        # Only the posting's own words block a job (the program's check); the model's guess is information.
+        if not german and "german_required" in record.get("flags", []):
+            record["note"] = "the posting asks for good German (set your German level in the preferences if you have it)"
+            save_match(record)
+        else:
+            chosen.append(record)
+    return chosen
+
+
+def search_run(a: dict[str, Any], settings: dict[str, Any], profile: dict, catalogue: dict | None, prefs: dict,
+               stamp: str) -> dict[str, Any]:
+    now = datetime.now()
+    state = read_json(STATE) if STATE.exists() else {}
+    summary: dict[str, Any] = {"window": "not searched", "requests": 0, "new_jobs": 0, "matched": 0, "problems": []}
+
+    # 1. Job Desk: search and keyword scores
+    if not a.get("skip_scrape") and not a.get("jobs"):
+        hours, pages, why = window(state, now)
+        log(f"Job Desk: searching LinkedIn, {why}", "job-desk")
+        scraped = run_script("scrape_jobs", {"hours": hours, "pages": pages})
+        summary["window"] = why
+        if scraped.get("ok"):
+            summary.update(requests=scraped.get("requests_used", 0), new_jobs=scraped.get("saved", 0))
+            if scraped.get("stopped"):
+                summary["problems"].append(f"search stopped early: {scraped['stopped']}")
+            state.update(last_day=now.date().isoformat(), last_run=now.isoformat(timespec="minutes"))
+            STATE.write_text(json.dumps(state), encoding="utf-8")
+        else:
+            summary["problems"].append(f"search failed: {scraped.get('error', '?')}")
+        log(f"Job Desk: {summary['new_jobs']} new jobs, {summary['requests']} requests", "job-desk")
+    ids = pending_jobs(500, a.get("jobs"))
+    keyword: dict[str, dict] = {}
+    if ids:
+        scored = run_script("shortlist", {"ids": ids, "top": 0})
+        if scored.get("ok"):
+            keyword = {r["id"]: r for r in read_json(ROOT / scored["file"])["jobs"]}
+    # the most promising jobs first; the model ranks at most max_matches_per_run, the rest wait for the next run
+    ids.sort(key=lambda i: -(keyword.get(i, {}).get("score") or 0))
+    asked = set(a.get("jobs") or [])
+    budget = int(settings["max_matches_per_run"])
+
+    # 2. Job Matcher
+    new_records: list[dict] = []
+    model_ok = True
+    matcher = agents.provider_for("job-matcher")
+    for job_id in ids:
+        job = read_json(POSTINGS / f"{job_id}.json")
+        kw = keyword.get(job_id, {})
+        record = {"id": job_id, "title": job.get("title", ""), "company": job.get("company", ""),
+                  "location": job.get("location", ""), "link": job.get("link", ""), "posted": job.get("posted", ""),
+                  "keyword_score": kw.get("score"), "flags": kw.get("flags", []), "matched_at": today()}
+        hard = SKIP_FLAGS & set(record["flags"])
+        if "not_internship" in record["flags"] and "working_student" not in record["flags"]:
+            hard = hard | {"not_internship"}
+        off_topic = ("role_not_in_title" in record["flags"] and (record["keyword_score"] or 0) < settings["min_keyword_score"]
+                     and job_id not in asked)
+        if hard:
+            record.update(fit=0, verdict="skip", reason=f"keyword check: {', '.join(sorted(hard))}")
+        elif "not_wanted" in record["flags"] and job_id not in asked:
+            record.update(fit=0, verdict="skip", reason="not an AI/ML/data-engineering internship")
+        elif off_topic:
+            record.update(fit=0, verdict="skip", reason=f"keyword check: not an AI/ML/data/Python role (score {record['keyword_score']})")
+        elif budget <= 0:
+            continue  # ranked next run
+        elif not job.get("description"):
+            record.update(fit=None, verdict="maybe", reason="the posting had no description to judge")
+        elif model_ok:
+            repos = relevant_projects(catalogue, f"{job.get('title', '')}\n{job['description']}",
+                                      {p["name"].lower() for p in profile["projects"]}, 3)
+            try:
+                log(f"Job Matcher: {record['company']} – {record['title'][:50]}", "job-matcher")
+                budget -= 1
+                record.update(agents.match_job(matcher, job, profile, repos))
+            except agents.StepError as e:
+                model_ok = False
+                summary["problems"].append(f"the model is not reachable ({e}); ranking continues next run")
+                continue
+        else:
+            continue
+        save_match(record)
+        new_records.append(record)
+    summary["matched"] = len(new_records)
+
+    # 3. The good matches wait for the user's OK
+    chosen = pick_candidates(new_records, settings, prefs, a.get("jobs"))
+    ticked = int(settings["max_drafts_per_run"])
+    waiting = [{"id": r["id"], "company": r.get("company", ""), "title": r.get("title", ""), "location": r.get("location", ""),
+                "fit": r.get("fit"), "reason": r.get("reason", ""), "link": r.get("link", ""), "pick": i < ticked}
+               for i, r in enumerate(chosen)]
+    report = write_reports(summary, new_records, [], stamp, waiting)
+    best = max(new_records, key=lambda r: r.get("fit") or 0, default=None)
+    text = (f"{summary['new_jobs']} new jobs, {len(waiting)} good matches waiting for your OK."
+            + (f" Best: {best['company']} ({best.get('fit')})" if best and best.get("fit") else ""))
+    note_for_job_desk(f"{text} Report: {rel(report)}")
+    notify("Job search", f"{text} Open Job Desk to make the CVs." if waiting else text)
+    result = {"ok": True, "report": rel(report), "new_jobs": summary["new_jobs"], "ranked": len(new_records),
+              "waiting": [w["id"] for w in waiting], "documents": [], "problems": summary["problems"]}
+    set_status(state="waiting" if waiting else "done", waiting=waiting, agent="job-desk", result=result,
+               detail=text if waiting else f"{text} Nothing to write this time.")
+    return result
+
+
+def documents_run(a: dict[str, Any], profile: dict, catalogue: dict | None, prefs: dict, stamp: str) -> dict[str, Any]:
+    declined = [i for i in a.get("decline") or [] if i not in (a.get("approve") or [])]
+    for job_id in declined:
+        record = load_match(job_id)
+        if record and not record.get("documents"):
+            record["note"] = DECLINED
+            save_match(record)
+    made, problems = [], []
+    for job_id in a.get("approve") or []:
+        record = load_match(job_id)
+        if not record or not (POSTINGS / f"{job_id}.json").exists():
+            problems.append(f"{job_id}: not found")
+            continue
+        if record.get("documents"):
+            problems.append(f"{job_id}: documents were already made")
+            continue
+        log(f"Documents for {job_id} {record.get('company', '')} (fit {record.get('fit')})", "application-writer")
+        try:
+            record["documents"] = make_documents(read_json(POSTINGS / f"{job_id}.json"), record, profile, catalogue, prefs)
+            record.pop("note", None)
+            made.append(record)
+        except agents.StepError as e:
+            record["note"] = f"writing failed: {e}"
+            problems.append(f"{record.get('company', job_id)}: writing failed ({e})")
+        save_match(record)
+    left = [w for w in read_status().get("waiting") or [] if w["id"] not in set(declined) | {m["id"] for m in made}]
+    docs = [{"id": m["id"], "company": m.get("company", ""), "title": m.get("title", ""), "fit": m.get("fit"),
+             "cv": m["documents"].get("cv", ""), "cover_letter": m["documents"].get("cover_letter", ""),
+             "problems": m["documents"].get("remaining", []) + m["documents"].get("warnings", [])} for m in made]
+    report = None
+    if a.get("approve"):
+        summary = {"window": "not searched (documents you approved)", "requests": 0, "new_jobs": 0, "matched": 0, "problems": problems}
+        report = write_reports(summary, [], made, stamp)
+        text = f"{len(made)} CV{'' if len(made) == 1 else 's'} written" + (f": {', '.join(m.get('company', '') for m in made)}" if made else "")
+        note_for_job_desk(f"{text}. Report: {rel(report)}")
+        notify("Job search", f"{text}. Check them in Job Desk.")
+    else:
+        text = f"Skipped {len(declined)} job{'' if len(declined) == 1 else 's'}; they will not be offered again."
+    result = {"ok": True, "report": rel(report) if report else "", "documents": [m["id"] for m in made], "declined": declined,
+              "problems": problems}
+    set_status(state="waiting" if left else ("done" if a.get("approve") else "idle"), waiting=left, agent="job-desk",
+               detail=text, result={**result, "files": docs})
+    return result
+
+
 def main() -> None:
     a = args()
     if not take_lock():
         print(json.dumps({"ok": False, "error": "Another automatic run is still going."}))
         return
     started, now = time.monotonic(), datetime.now()
-    stamp = now.strftime("%Y-%m-%d_%H%M")
+    stamp = now.strftime("%Y-%m-%d_%H%M%S")
+    documents = bool(a.get("approve") or a.get("decline"))
+    previous = read_status()
+    set_status(state="running", kind="documents" if documents else "search", agent="job-desk",
+               detail="Starting", started=now.isoformat(timespec="seconds"), log=[], result=None,
+               waiting=previous.get("waiting") or [] if documents else [])
+    LIVE["on"] = True
     try:
         profile_path = latest(ME, "profile")
         if not profile_path:
-            print(json.dumps({"ok": False, "error": "No profile yet: ask Job Desk to read your CV first."}))
+            error = "No profile yet: ask Job Desk to read your CV first."
+            set_status(state="failed", detail=error)
+            print(json.dumps({"ok": False, "error": error}))
             return
         profile = read_json(profile_path)
         prefs_path, catalogue_path = latest(ME, "preferences"), latest(ME, "projects")
         prefs = read_json(prefs_path) if prefs_path else {}
         catalogue = read_json(catalogue_path) if catalogue_path else None
-        settings = {**DEFAULTS, **(prefs.get("automation") or {}), **{k: a[k] for k in DEFAULTS if k in a}}
-        state = read_json(STATE) if STATE.exists() else {}
-        summary: dict[str, Any] = {"window": "not searched", "requests": 0, "new_jobs": 0, "matched": 0, "problems": []}
-
-        # 1. Job Desk: search and keyword scores
-        if not a.get("skip_scrape") and not a.get("jobs"):
-            hours, pages, why = window(state, now)
-            log(f"Job Desk: searching LinkedIn, {why}")
-            scraped = run_script("scrape_jobs", {"hours": hours, "pages": pages})
-            summary["window"] = why
-            if scraped.get("ok"):
-                summary.update(requests=scraped.get("requests_used", 0), new_jobs=scraped.get("saved", 0))
-                if scraped.get("stopped"):
-                    summary["problems"].append(f"search stopped early: {scraped['stopped']}")
-                state.update(last_day=now.date().isoformat(), last_run=now.isoformat(timespec="minutes"))
-                STATE.write_text(json.dumps(state), encoding="utf-8")
-            else:
-                summary["problems"].append(f"search failed: {scraped.get('error', '?')}")
-            log(f"Job Desk: {summary['new_jobs']} new jobs, {summary['requests']} requests")
-        ids = pending_jobs(500, a.get("jobs"))
-        keyword: dict[str, dict] = {}
-        if ids:
-            scored = run_script("shortlist", {"ids": ids, "top": 0})
-            if scored.get("ok"):
-                keyword = {r["id"]: r for r in read_json(ROOT / scored["file"])["jobs"]}
-        # the most promising jobs first; the model ranks at most max_matches_per_run, the rest wait for the next run
-        ids.sort(key=lambda i: -(keyword.get(i, {}).get("score") or 0))
-        asked = set(a.get("jobs") or [])
-        budget = int(settings["max_matches_per_run"])
-
-        # 2. Job Matcher
-        new_records: list[dict] = []
-        model_ok = True
-        matcher = agents.provider_for("job-matcher")
-        for job_id in ids:
-            job = read_json(POSTINGS / f"{job_id}.json")
-            kw = keyword.get(job_id, {})
-            record = {"id": job_id, "title": job.get("title", ""), "company": job.get("company", ""),
-                      "location": job.get("location", ""), "link": job.get("link", ""), "posted": job.get("posted", ""),
-                      "keyword_score": kw.get("score"), "flags": kw.get("flags", []), "matched_at": today()}
-            hard = SKIP_FLAGS & set(record["flags"])
-            if "not_internship" in record["flags"] and "working_student" not in record["flags"]:
-                hard = hard | {"not_internship"}
-            off_topic = ("role_not_in_title" in record["flags"] and (record["keyword_score"] or 0) < settings["min_keyword_score"]
-                         and job_id not in asked)
-            if hard:
-                record.update(fit=0, verdict="skip", reason=f"keyword check: {', '.join(sorted(hard))}")
-            elif "not_wanted" in record["flags"] and job_id not in asked:
-                record.update(fit=0, verdict="skip", reason="not an AI/ML/data-engineering internship")
-            elif off_topic:
-                record.update(fit=0, verdict="skip", reason=f"keyword check: not an AI/ML/data/Python role (score {record['keyword_score']})")
-            elif budget <= 0:
-                continue  # ranked next run
-            elif not job.get("description"):
-                record.update(fit=None, verdict="maybe", reason="the posting had no description to judge")
-            elif model_ok:
-                repos = relevant_projects(catalogue, f"{job.get('title', '')}\n{job['description']}",
-                                          {p["name"].lower() for p in profile["projects"]}, 3)
-                try:
-                    log(f"Job Matcher: {job_id} {record['company']} – {record['title'][:50]}")
-                    budget -= 1
-                    record.update(agents.match_job(matcher, job, profile, repos))
-                except agents.StepError as e:
-                    model_ok = False
-                    summary["problems"].append(f"the model is not reachable ({e}); ranking continues next run")
-                    continue
-            else:
-                continue
-            save_match(record)
-            new_records.append(record)
-        summary["matched"] = len(new_records)
-
-        # 3-5. CV Writer, CV Reviewer, render for the best new matches
-        made: list[dict] = []
-        german = speaks_german(prefs)
-        earlier = [r for r in all_matches() if r["id"] not in {x["id"] for x in new_records}
-                   and not r.get("documents") and not r.get("note") and (not a.get("jobs") or r["id"] in a["jobs"])]
-        def sane(r: dict) -> bool:
-            """The model's fit is generous; documents need the program's keyword check to agree as well."""
-            flags = set(r.get("flags") or [])
-            not_intern = "not_internship" in flags and "working_student" not in flags
-            return (r.get("keyword_score") or 0) >= settings["min_keyword_score"] and not {"role_not_in_title", "not_wanted"} & flags \
-                and not not_intern and not SKIP_FLAGS & flags
-        candidates = sorted((r for r in new_records + earlier if r.get("verdict") == "apply" and (r.get("fit") or 0) >= settings["min_fit"]
-                             and sane(r)), key=lambda r: -((r.get("fit") or 0) + 0.2 * (r.get("keyword_score") or 0)))
-        for record in candidates:
-            # Only the posting's own words block a job (the program's check); the model's guess is information.
-            if not german and "german_required" in record.get("flags", []):
-                record["note"] = "the posting asks for good German (set your German level in the preferences if you have it)"
-                save_match(record)
-                continue
-            if len(made) >= int(settings["max_drafts_per_run"]):
-                record["note"] = "the limit of documents per run was reached; it will not be written automatically"
-                save_match(record)
-                continue
-            if not model_ok:
-                break
-            log(f"Documents for {record['id']} {record['company']} (fit {record['fit']})")
-            try:
-                record["documents"] = make_documents(read_json(POSTINGS / f"{record['id']}.json"), record, profile, catalogue, prefs)
-                made.append(record)
-            except agents.StepError as e:
-                record["note"] = f"writing failed: {e}"
-            save_match(record)
-
-        # 6. Report
-        report = write_reports(summary, new_records, made, stamp)
-        best = max(new_records, key=lambda r: r.get("fit") or 0, default=None)
-        text = (f"{summary['new_jobs']} new jobs, {len(made)} CVs written."
-                + (f" Best: {best['company']} ({best.get('fit')})" if best and best.get("fit") else ""))
-        note_for_job_desk(f"{text} Report: {rel(report)}")
-        notify("Job search", text)
-        result = {"ok": True, "report": rel(report), "new_jobs": summary["new_jobs"], "ranked": len(new_records),
-                  "documents": [r["id"] for r in made], "problems": summary["problems"],
-                  "minutes": round((time.monotonic() - started) / 60, 1)}
-        log(f"done in {result['minutes']} minutes: {rel(report)}")
+        if documents:
+            result = documents_run(a, profile, catalogue, prefs, stamp)
+        else:
+            settings = {**DEFAULTS, **(prefs.get("automation") or {}), **{k: a[k] for k in DEFAULTS if k in a}}
+            result = search_run(a, settings, profile, catalogue, prefs, stamp)
+        result["minutes"] = round((time.monotonic() - started) / 60, 1)
+        log(f"done in {result['minutes']} minutes" + (f": {result['report']}" if result.get("report") else ""))
         print(json.dumps(result, ensure_ascii=False))
+    except Exception as e:
+        set_status(state="failed", detail=f"The run stopped: {type(e).__name__}: {e}. The log is data/jobs/pipeline.log.")
+        raise
     finally:
+        LIVE["on"] = False
         LOCK.unlink(missing_ok=True)
 
 

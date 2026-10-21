@@ -57,7 +57,8 @@ def _bullets(items: list[Any]) -> str:
     return "<ul>" + "".join(f"<li>{inline(_text(b))}</li>" for b in items) + "</ul>"
 
 
-def cv_html(doc: dict[str, Any]) -> str:
+def cv_html(doc: dict[str, Any], fill: bool = False) -> str:
+    """fill: the page is exactly one A4 high and the free space is shared between the sections (cv.css .fill)."""
     parts: list[str] = []
     summary = doc.get("summary") or []
     if summary:
@@ -94,7 +95,9 @@ def cv_html(doc: dict[str, Any]) -> str:
             rows.append(f'<div class="entry edu"><div class="entry-head"><span><b>{inline(e["degree"])}</b>{school_inline}</span>'
                         f'<span class="meta">{inline(e.get("dates", ""))}</span></div>{note}</div>')
         parts.append("<h2>Education</h2>" + "".join(rows))
-    return _page("cv_template.html", f"{doc['header']['name']} CV", header_html(doc["header"]), "".join(parts))
+    page = _page("cv_template.html", f"{doc['header']['name']} CV", f"<header>{header_html(doc['header'])}</header>",
+                 "".join(f"<section>{part}</section>" for part in parts))
+    return page.replace('<div class="page">', '<div class="page fill">', 1) if fill else page
 
 
 def letter_html(doc: dict[str, Any]) -> str:

@@ -456,3 +456,53 @@ def test_render_always_shows_three_projects_with_at_most_two_bullets():
     render.expand_fact_ids(d, profile)
     cv = render.build_cv(d, profile, PROJECTS)
     assert [p["id"] for p in cv["projects"]] == ["CP1", "CP2", "CP3"] and len(cv["projects"][0]["bullets"]) == 2
+
+
+# ---------- the CV fills its page with true master content ----------
+
+def test_page_extras_are_left_out_master_facts_best_first():
+    doc = render.build_cv(draft(), PROFILE, PROJECTS)
+    extras = render.page_extras(doc, PROFILE)
+    kinds = [e[0] if e[0] == "project" else e[1] for e in extras]
+    assert kinds and kinds == ["experience"] * kinds.count("experience") + kinds[kinds.count("experience"):]  # work first
+    shown = {render._key(b["text"]) for e in doc["experience"] + doc["projects"] for b in e["bullets"]}
+    for e in extras:
+        bullet = e[1]["bullets"][0] if e[0] == "project" else e[3]
+        assert render._key(bullet["text"]) not in shown  # only what the CV does not show yet
+        assert any(bullet in m["bullets"] for m in PROFILE["experience"] + PROFILE["projects"])  # word for word from the profile
+
+
+def test_fill_page_adds_what_fits_skips_what_overflows_and_prints_filled(monkeypatch, tmp_path):
+    doc = {"header": {}, "summary": [], "skills": [], "education": [],
+           "experience": [{"id": "E1", "bullets": [{"text": "a"}]}], "projects": []}
+    profile = {"experience": [{"id": "E1", "bullets": [{"id": "F1", "text": "a"}, {"id": "F2", "text": "long"}, {"id": "F3", "text": "short"}]}],
+               "projects": [{"id": "P1", "bullets": [{"id": "F4", "text": "p"}]}]}
+    height = {"a": 500, "long": 400, "short": 100, "p": 150}  # points each bullet takes; the page has 816 free
+    printed = []
+
+    def fake_html(d, fill=False):
+        return json.dumps({"d": d, "fill": fill})
+
+    def fake_print(html_text, html_path, pdf_path):
+        printed.append(json.loads(html_text))
+
+    def fake_facts(path):
+        d = printed[-1]["d"]
+        used = sum(height[b["text"]] for e in d["experience"] + d["projects"] for b in e["bullets"])
+        return {"pages": 1 if used <= 816 else 2, "last_text_y": min(used, 841), "page_height": 842}
+    monkeypatch.setattr(render, "cv_html", fake_html)
+    monkeypatch.setattr(render, "print_pdf", fake_print)
+    monkeypatch.setattr(render, "pdf_facts", fake_facts)
+    out, added = render.fill_page(doc, profile, tmp_path / "cv.html", tmp_path / "cv.pdf")
+    assert [b["text"] for b in out["experience"][0]["bullets"]] == ["a", "short"]  # "long" would overflow
+    assert [p["id"] for p in out["projects"]] == ["P1"] and added == 2
+    assert printed[-1]["fill"] is True and printed[-2]["fill"] is False
+    assert doc["experience"][0]["bullets"] == [{"text": "a"}]  # the input is not changed
+
+
+def test_a_filled_cv_page_is_one_a4_high():
+    html_text = render.cv_html({"header": {"name": "Ada", "contact": []}, "summary": [{"text": "x"}], "skills": [],
+                                "experience": [], "projects": [], "education": []}, fill=True)
+    assert '<div class="page fill">' in html_text and "<section>" in html_text and ".page.fill" in html_text
+    assert '<div class="page fill">' not in render.cv_html({"header": {"name": "Ada", "contact": []}, "summary": [], "skills": [],
+                                                           "experience": [], "projects": [], "education": []})

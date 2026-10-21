@@ -15,6 +15,8 @@ import httpx
 from factory.schema import ModelConfig
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_CALL_OPEN = "<tool_call>"
+_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*(?:</tool_call>|$)", re.DOTALL)
 
 
 class ProviderError(RuntimeError):
@@ -80,6 +82,48 @@ def _parse_calls(raw: list[dict[str, Any]] | None) -> list[ToolCall]:
     return calls
 
 
+def tools_prompt(tools: list[dict[str, Any]]) -> str:
+    """The tool section of the Qwen chat template, word for word, for tools_as_text."""
+    return ("\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\n"
+            "You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n"
+            + "\n".join(json.dumps(t, ensure_ascii=False) for t in tools) + "\n</tools>\n\n"
+            "For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n"
+            "<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>")
+
+
+def calls_from_text(content: str) -> tuple[str, list[ToolCall]]:
+    """Tool calls the model wrote as <tool_call>{...}</tool_call> text (the last one may be unfinished),
+    and the content without them."""
+    calls: list[ToolCall] = []
+    for block in _CALL_RE.findall(content):
+        for raw in [block] if block.startswith("{") and block.count("\n{") == 0 else block.splitlines():
+            try:
+                obj = json.loads(raw.strip())
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and obj.get("name"):
+                args = obj.get("arguments") or {}
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except ValueError:
+                        args = {}
+                calls.append(ToolCall(name=str(obj["name"]), arguments=args if isinstance(args, dict) else {}))
+    return _CALL_RE.sub("", content).strip(), calls
+
+
+def _shown_upto(text: str) -> int:
+    """How much of a streamed reply can be shown: everything before a tool call, holding back a tail that
+    might be the start of one."""
+    cut = text.find(_CALL_OPEN)
+    if cut >= 0:
+        return cut
+    for k in range(len(_CALL_OPEN) - 1, 0, -1):
+        if text.endswith(_CALL_OPEN[:k]):
+            return len(text) - k
+    return len(text)
+
+
 class OllamaProvider(LLMProvider):
     streams = True  # chat() accepts on_token and should_stop
 
@@ -94,6 +138,7 @@ class OllamaProvider(LLMProvider):
         client: httpx.Client | None = None,
         keep_alive: str | None = None,
         num_predict: int | None = None,
+        tools_as_text: bool = False,
     ) -> None:
         self.model = model
         self.num_ctx = num_ctx
@@ -102,14 +147,23 @@ class OllamaProvider(LLMProvider):
         self.think = think
         self.keep_alive = keep_alive  # how long Ollama keeps the model loaded after this request
         self.num_predict = num_predict  # most tokens one reply may have (None = no cap)
+        # Put the tools into the system prompt as the chat template would, and read the calls from the reply
+        # ourselves. Ollama 0.32's own tool parsing cuts some calls off mid-way and returns an empty reply
+        # (Job Desk's script_run, 2026-10-21); the model's raw output was a correct call every time.
+        self.tools_as_text = tools_as_text
         self._client = client or httpx.Client(base_url=host, timeout=timeout)
 
     def _payload(self, messages, tools, schema, stream: bool) -> dict[str, Any]:
         options: dict[str, Any] = {"num_ctx": self.num_ctx, "temperature": self.temperature}
         if self.num_predict:
             options["num_predict"] = self.num_predict
+        if tools and self.tools_as_text:
+            if messages and messages[0].get("role") == "system":
+                messages = [{**messages[0], "content": messages[0]["content"] + tools_prompt(tools)}, *messages[1:]]
+            else:
+                messages = [{"role": "system", "content": tools_prompt(tools).lstrip()}, *messages]
         payload: dict[str, Any] = {"model": self.model, "messages": messages, "stream": stream, "options": options}
-        if tools:
+        if tools and not self.tools_as_text:
             payload["tools"] = tools
         if schema:
             payload["format"] = schema
@@ -147,6 +201,7 @@ class OllamaProvider(LLMProvider):
         Without any of them, one plain request."""
         streaming = on_token is not None or should_stop is not None or on_call is not None
         started = time.monotonic()
+        as_text = bool(tools) and self.tools_as_text
         try:
             if not streaming:
                 resp = self._client.post("/api/chat", json=self._payload(messages, tools, schema, False))
@@ -154,10 +209,16 @@ class OllamaProvider(LLMProvider):
                     raise self._status_error(resp.status_code, resp.text)
                 data = resp.json()
                 msg = data.get("message") or {}
-                return self._response(data, msg.get("content") or "", _parse_calls(msg.get("tool_calls")), 0.0)
+                content, calls = msg.get("content") or "", _parse_calls(msg.get("tool_calls"))
+                if as_text:
+                    content, written = calls_from_text(content)
+                    calls += written
+                return self._response(data, content, calls, 0.0)
 
             parts: list[str] = []
             calls: list[ToolCall] = []
+            shown = 0  # characters of the reply handed to on_token (tools_as_text holds tool calls back)
+            written = 0  # tool calls found in the text so far
             first = 0.0
             data: dict[str, Any] = {}
             with self._client.stream("POST", "/api/chat", json=self._payload(messages, tools, schema, True)) as resp:
@@ -179,7 +240,18 @@ class OllamaProvider(LLMProvider):
                         first = time.monotonic() - started
                     if piece:
                         parts.append(piece)
-                        if on_token:
+                        if as_text:
+                            text = "".join(parts)
+                            upto = _shown_upto(text)
+                            if on_token and upto > shown:
+                                on_token(text[shown:upto])
+                            shown = max(shown, upto)
+                            if "</tool_call>" in piece or "</tool_call>" in text[-len(piece) - 12:]:
+                                done_part = text[: text.rfind("</tool_call>") + len("</tool_call>")]
+                                found = calls_from_text(done_part)[1]
+                                new_calls = new_calls + found[written:]
+                                written = len(found)
+                        elif on_token:
                             on_token(piece)
                     enough = False
                     for call in new_calls:
@@ -192,7 +264,14 @@ class OllamaProvider(LLMProvider):
                         break
                     if data.get("done"):
                         break
-            return self._response(data, "".join(parts), calls, first)
+            content = "".join(parts)
+            if as_text:
+                if on_token and _CALL_OPEN not in content and shown < len(content):
+                    on_token(content[shown:])  # a held-back tail that was not a tool call after all
+                content, found = calls_from_text(content)
+                if data.get("done_reason") != "early":
+                    calls += found[written:]  # a last call without its closing tag
+            return self._response(data, content, calls, first)
         except httpx.ConnectError as e:
             raise ProviderError(
                 f"Cannot reach Ollama at {self.host}. "
@@ -209,15 +288,14 @@ def prefill(provider: LLMProvider, messages: list[dict[str, Any]], tools: list |
     so it sits in the prompt cache and the first real message only has to read itself."""
     if not isinstance(provider, OllamaProvider):
         return False
-    saved = provider.num_predict
-    provider.num_predict = 1
+    # A copy: the chat's own provider may send the user's first message at the same time, and must keep its cap.
+    quick = copy.copy(provider)
+    quick.num_predict = 1
     try:
-        provider.chat([*messages, {"role": "user", "content": "."}], tools=tools)
+        quick.chat([*messages, {"role": "user", "content": "."}], tools=tools)
         return True
     except ProviderError:
         return False
-    finally:
-        provider.num_predict = saved
 
 
 def loaded_models(host: str = "http://localhost:11434", client: httpx.Client | None = None) -> dict[str, int] | None:
@@ -286,6 +364,6 @@ def make_provider(cfg: ModelConfig) -> LLMProvider:
     """Build the right provider from a spec's model section."""
     if cfg.provider == "ollama":
         return OllamaProvider(
-            model=cfg.name, num_ctx=cfg.num_ctx, temperature=cfg.temperature, think=cfg.think
+            model=cfg.name, num_ctx=cfg.num_ctx, temperature=cfg.temperature, think=cfg.think, tools_as_text=True
         )
     raise ProviderError(f"Unknown provider: {cfg.provider}")

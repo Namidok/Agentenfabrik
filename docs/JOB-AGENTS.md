@@ -24,21 +24,27 @@ each agent is allowed to touch:
   its conversation: they print counts, IDs, scores and file names, never descriptions.
 - The agents that read postings have no network and no program tools. The trade-off: CV Writer and Reviewer can
   create files in one folder each. That is needed to hand over a draft; they can never replace a file.
-- AgentFactory has no multi-agent workflow type, so **you are the hand-off**: each agent ends by telling you which
-  agent to open next and what to give it (a job ID).
+- The hand-off between them is a program (`scripts/jobs/pipeline.py`), not you: one run goes from Job Desk to
+  Job Matcher, stops once for your OK, then goes on to CV Writer, CV Reviewer and the PDFs. In that run the
+  matcher, writer and reviewer work as fixed steps with the same models (`scripts/jobs/auto_agents.py`).
 
 ## The flow
 
+Open **Job Desk** and click **Search for jobs** in the panel above the chat (or type "search for jobs").
+Everything else runs by itself; the panel shows each step live and the office shows the agent at work.
+
 ```
-Job Desk:     extract_cv → (you correct facts: profile_fix) → fetch_github → save_preferences
-Job Desk:     scrape_jobs → shortlist
-Job Matcher:  "show me the shortlist" → details for a job → you pick one
-Job Desk:     "prepare li-…"        (writes the job brief and your facts for that job)
-CV Writer:    "li-…"                (writes output/drafts/li-…_draft.json)
-CV Reviewer:  "li-…"                (writes output/reviews/li-…_review.json; if "revise", back to CV Writer)
-Job Desk:     "render li-…"         (checks the draft, prints both PDFs, adds a tracker row)
-You:          open the PDFs, approve or ask for changes, apply yourself
+Job Desk      searches LinkedIn, keyword score for each new job
+Job Matcher   ranks every new job against your profile (fit 0-100, apply / maybe / skip)
+You           the panel asks "Make CVs?": tick the jobs, click Make CVs (or Skip all)
+CV Writer     writes the CV summary and the cover letter for each ticked job
+CV Reviewer   checks every claim against your facts; one rewrite round
+Job Desk      prints both PDFs; the panel links them
+You           open the PDFs and apply yourself. Nothing is ever sent.
 ```
+
+Unticked jobs are skipped and not offered again. The other three agents can still be opened to talk about one job,
+but you never need them for the flow.
 
 ## Setup (once)
 
@@ -85,27 +91,31 @@ All result files are versioned (`_v1`, `_v2`, …) and never overwritten.
 - JSON validation happens in the programs (`render`, `save_preferences`), not in the AgentFactory runtime:
   the runtime has no output-schema checks.
 
-## Automatic run (every 3 hours, one trigger)
+## The run in detail (also every 3 hours)
 
-`scripts/jobs/pipeline.py` does the work of all four agents in one go, without chatting:
+`scripts/jobs/pipeline.py` does the work of all four agents, in two runs with your OK in between:
 
 | Step | Agent | What happens |
 |---|---|---|
 | 1 | Job Desk | LinkedIn search: the **last 24 hours** on the first run of a day (2 result pages per search), afterwards **since the last run** (+1 hour overlap). Jobs already seen are skipped. Keyword score for each new job. |
 | 2 | Job Matcher | Each new job is ranked against your profile: its main requirements, which of your facts show each one, gaps, fit 0-100, apply / maybe / skip. Uses thinking mode (about 1.5 min per job). Non-internships and senior roles are skipped by the keyword check without the model. |
-| 3 | CV Writer | For each job with verdict **apply** (fit 70+), up to 3 per run: the program picks the CV's bullets and projects from the matcher's mapping and the job's words; the model tailors the headline and summary and writes the letter's hook, two evidence paragraphs and closing around fixed, true sentences (role, company, MSc, mandatory internship). |
-| 4 | CV Reviewer | Program checks (numbers must be in the cited fact, no filler words, no "I lack...", no invented availability, length) and a model claim check per paragraph; flagged parts are rewritten once; anything still unsupported is replaced by the fact itself or removed. |
-| 5 | render | Both PDFs in the master CV design, a row in `output/tracker.csv`. |
-| 6 | report | `output/runs/<date>_<time>.md`, all ranked jobs in `output/ranked_jobs.md` (Job Matcher reads `data/jobs/ranked.md`), a line in Job Desk's notes, a Mac notification. **Nothing is sent.** |
+| 3 | You | Jobs with verdict **apply** (fit 70+) that pass the keyword check wait in the Job Desk panel; the best 3 are ticked for you. A Mac notification says so. **No document is written without your OK.** |
+| 4 | CV Writer | For each job you ticked: the program picks the CV's bullets and projects from the matcher's mapping and the job's words; the model tailors the headline and summary and writes the letter's hook, two evidence paragraphs and closing around fixed, true sentences (role, company, MSc, mandatory internship). |
+| 5 | CV Reviewer | Program checks (numbers must be in the cited fact, no filler words, no "I lack...", no invented availability, length) and a model claim check per paragraph; flagged parts are rewritten once; anything still unsupported is replaced by the fact itself or removed. |
+| 6 | render | Both PDFs in the master CV design, a row in `output/tracker.csv`, links in the panel. |
 
-Turn it on, off, or start it now:
-- Job Desk: `run now`, `turn on the automatic search every 3 hours`, `turn it off`, `is the automatic search on?`
-- Or in Terminal: `.venv/bin/python scripts/jobs/schedule.py '{"action": "install", "every_hours": 3}'`
-  (`"remove"`, `"status"`), and `.venv/bin/python scripts/jobs/pipeline.py` to run once.
+Each run ends with `output/runs/<date>_<time>.md`, all ranked jobs in `output/ranked_jobs.md` (Job Matcher reads
+`data/jobs/ranked.md`), a line in Job Desk's notes and a Mac notification. What the panel shows comes from
+`data/jobs/run_status.json`.
 
-It runs at 00:00, 03:00, ... 21:00 while the Mac is awake; a run missed during sleep starts on wake. One run at a
-time (a second one exits). Log: `data/jobs/pipeline.log`. A run takes about 3-5 minutes per job it writes for, plus
-about 1.5 minutes per new job it ranks (at most 12 per run; the rest are ranked next run).
+Every 3 hours: Job Desk `turn on the automatic search every 3 hours`, `turn it off`, `is the automatic search on?`
+(or `.venv/bin/python scripts/jobs/schedule.py '{"action": "install", "every_hours": 3}'`, `"remove"`, `"status"`).
+The app starts it at 00:00, 03:00, ... 21:00 **while it is open**; a time missed while the Mac slept starts once on
+waking. It is not a macOS LaunchAgent: background jobs started by macOS may not read `~/Downloads`, where this
+project lives (the old LaunchAgent failed with exit code 78 and never ran). Scheduled runs also stop at step 3.
+
+One run at a time (a second one exits). Log: `data/jobs/pipeline.log`. In Terminal:
+`.venv/bin/python scripts/jobs/pipeline.py` searches and ranks; `'{"approve": ["li-…"], "decline": []}'` writes.
 
 Optional settings in your preferences (tell Job Desk, or edit the newest `data/jobs/me/preferences_vN.json`):
 - `"availability": "from March 2027 for 6 months"`: only then does the letter mention availability.

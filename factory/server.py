@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -479,6 +483,136 @@ async def api_hire_draft(request: Request, body: dict[str, Any] = Body(...)) -> 
         except Exception as e:  # keep the server alive whatever the model does
             raise HTTPException(status_code=500, detail=f"Something went wrong while drafting ({type(e).__name__}).") from e
     return {"fields": _form_from_spec(spec), "notes": capability_notes(transcript, spec)}
+
+
+# ---------- the job search run (scripts/jobs/pipeline.py) ----------
+#
+# The Job Desk panel starts a run, follows it through data/jobs/run_status.json, sends the user's OK for the
+# documents, and opens the finished PDFs. The run itself is a separate process, so it survives a closed page.
+
+JOBS_DIR = ROOT / "scripts" / "jobs"
+JOB_STATUS = ROOT / "data" / "jobs" / "run_status.json"
+JOB_LOCK = ROOT / "data" / "jobs" / "pipeline.lock"
+JOB_OUTPUT = ROOT / "output"
+JOB_ID = re.compile(r"^[a-z]{2,4}-[A-Za-z0-9_-]{1,40}$")
+JOB_FILE_TYPES = {".pdf": "application/pdf", ".md": "text/plain; charset=utf-8"}
+
+
+def _job_run_alive() -> bool:
+    try:
+        pid = int(JOB_LOCK.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _start_job_run(arguments: dict[str, Any]) -> dict[str, Any]:
+    proc = subprocess.run([sys.executable, "-E", "-s", str(JOBS_DIR / "run_now.py")], input=json.dumps(arguments),
+                          capture_output=True, text=True, timeout=30, cwd=JOBS_DIR)
+    try:
+        out = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        out = {"ok": False, "error": (proc.stderr.strip().splitlines() or ["no output"])[-1][:300]}
+    if not out.get("ok"):
+        raise HTTPException(status_code=409, detail=out.get("error") or "The run did not start.")
+    return out
+
+
+@app.get("/api/jobs/run")
+def api_job_run() -> dict[str, Any]:
+    try:
+        status = json.loads(JOB_STATUS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        status = {"state": "idle"}
+    if status.get("state") == "running" and not _job_run_alive():
+        status.update(state="failed", detail="The run stopped without finishing. The log is data/jobs/pipeline.log.")
+    return status
+
+
+@app.post("/api/jobs/run")
+def api_job_start(request: Request) -> dict[str, Any]:
+    _require_page(request)
+    return _start_job_run({})
+
+
+@app.post("/api/jobs/choose")
+def api_job_choose(request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """The user's answer to "make CVs?": approve gets documents, decline is never offered again."""
+    _require_page(request)
+    picked = {key: body.get(key) or [] for key in ("approve", "decline")}
+    for ids in picked.values():
+        if not isinstance(ids, list) or len(ids) > 100 or not all(isinstance(i, str) and JOB_ID.match(i) for i in ids):
+            raise HTTPException(status_code=422, detail="approve and decline must be lists of job IDs like li-123.")
+    if not picked["approve"] and not picked["decline"]:
+        raise HTTPException(status_code=422, detail="Pick at least one job.")
+    return _start_job_run(picked)
+
+
+# Every few hours while the app is open (data/jobs/schedule.json, set by Job Desk through scripts/jobs/schedule.py).
+# Not a macOS LaunchAgent: background jobs started by macOS may not read ~/Downloads, where the project lives.
+JOB_SCHEDULE = ROOT / "data" / "jobs" / "schedule.json"
+
+
+def _schedule_every() -> int | None:
+    try:
+        every = int(json.loads(JOB_SCHEDULE.read_text(encoding="utf-8"))["every_hours"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return every if every in (1, 2, 3, 4, 6, 8, 12, 24) else None
+
+
+def next_slot(now: datetime, every: int) -> datetime:
+    """The next of the fixed times 00:00, every:00, ... after now."""
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight + timedelta(hours=(now.hour // every + 1) * every)
+
+
+def schedule_tick(now: datetime, every: int | None, due: datetime | None) -> tuple[bool, datetime | None]:
+    """(start a run now?, the next time). A time missed while the Mac slept starts once on waking."""
+    if every is None:
+        return False, None
+    if due is None:
+        return False, next_slot(now, every)
+    if now >= due:
+        return True, next_slot(now, every)
+    return False, min(due, next_slot(now, every))  # a shorter interval set meanwhile
+
+
+def _schedule_loop() -> None:
+    due = None
+    while True:
+        time.sleep(30)
+        fire, due = schedule_tick(datetime.now(), _schedule_every(), due)
+        if fire:
+            try:
+                _start_job_run({})
+            except (HTTPException, subprocess.SubprocessError, OSError):
+                pass  # a run is going already, or it will be tried at the next time
+
+
+def _startup_schedule() -> None:
+    threading.Thread(target=_schedule_loop, daemon=True, name="job-schedule").start()
+
+
+app.router.on_startup.append(_startup_schedule)
+
+
+@app.get("/api/jobs/file")
+def api_job_file(path: str) -> FileResponse:
+    """A finished CV, cover letter or report from output/, to open in the browser."""
+    target = (ROOT / path).resolve()
+    kind = JOB_FILE_TYPES.get(target.suffix.lower())
+    if not kind or not target.is_relative_to(JOB_OUTPUT.resolve()) or not target.is_file():
+        raise HTTPException(status_code=404, detail="No such document in output/.")
+    return FileResponse(target, media_type=kind)
 
 
 # ---------- chat websocket ----------

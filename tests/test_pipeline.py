@@ -191,7 +191,7 @@ def run_world(tmp_path, monkeypatch):
     (data / "postings" / "li-1.json").write_text(json.dumps(JOB))
     for name, value in (("DATA", data), ("ME", data / "me"), ("OUTPUT", out), ("POSTINGS", data / "postings"), ("ROOT", tmp_path),
                         ("MATCHES", data / "matches"), ("STATE", data / "pipeline_state.json"), ("LOCK", data / "pipeline.lock"),
-                        ("RUNS", out / "runs")):
+                        ("RUNS", out / "runs"), ("STATUS", data / "run_status.json")):
         monkeypatch.setattr(pipeline, name, value)
     monkeypatch.setenv("AGENTFACTORY_NO_NOTIFY", "1")
     calls = []
@@ -221,24 +221,70 @@ def run_world(tmp_path, monkeypatch):
     return tmp_path, calls
 
 
-def test_one_run_searches_ranks_writes_and_reports(run_world, capsys, monkeypatch):
-    root, calls = run_world
-    monkeypatch.setattr(sys, "argv", ["pipeline", "{}"])
+def run(monkeypatch, capsys, arguments: dict) -> dict:
+    monkeypatch.setattr(sys, "argv", ["pipeline", json.dumps(arguments)])
     pipeline.main()
-    result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert result["ok"] and result["documents"] == ["li-1"] and result["ranked"] == 1
-    assert [c[0] for c in calls] == ["scrape_jobs", "shortlist", "render"]
+    return json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+
+def status(root: Path) -> dict:
+    return json.loads((root / "data" / "jobs" / "run_status.json").read_text())
+
+
+def test_a_search_ranks_then_waits_for_the_users_ok(run_world, capsys, monkeypatch):
+    root, calls = run_world
+    result = run(monkeypatch, capsys, {})
+    assert result["ok"] and result["waiting"] == ["li-1"] and result["documents"] == [] and result["ranked"] == 1
+    assert [c[0] for c in calls] == ["scrape_jobs", "shortlist"]  # no document without the OK
     assert calls[0][1] == {"hours": 24, "pages": 2}
+    s = status(root)
+    assert s["state"] == "waiting" and s["waiting"][0]["id"] == "li-1" and s["waiting"][0]["pick"] is True
+    assert s["waiting"][0]["company"] == "BMW Group" and s["waiting"][0]["fit"] == 82
+    assert any("Job Matcher" in line for line in s["log"])
+    report = (root / result["report"]).read_text()
+    assert "li-1" in report and "Waiting for your OK" in report
+    assert "li-1" in (root / "output" / "ranked_jobs.md").read_text()
+    assert "waiting for your OK" in (root / "data" / "job-desk" / "notes.md").read_text()
+    assert not (root / "data" / "jobs" / "pipeline.lock").exists()
+
+
+def test_the_ok_writes_checks_and_prints_the_documents(run_world, capsys, monkeypatch):
+    root, calls = run_world
+    run(monkeypatch, capsys, {})
+    result = run(monkeypatch, capsys, {"approve": ["li-1"]})
+    assert result["ok"] and result["documents"] == ["li-1"]
+    assert [c[0] for c in calls] == ["scrape_jobs", "shortlist", "render"]
     match = json.loads((root / "data" / "jobs" / "matches" / "li-1.json").read_text())
     assert match["fit"] == 82 and match["documents"]["cv"] == "output/bmw_cv_v1.pdf"
     draft = json.loads((root / "output" / "drafts" / "li-1_auto_v1.json").read_text())
     assert draft["role"] == "Intern Agentic AI for Voice Assistants" and draft["cv"]["headline"].endswith("· Agentic AI & Voice")
     assert "mandatory internship" in draft["cover_letter"]["paragraphs"][0]["text"]
     assert draft["cv"]["projects"][0]["id"] in ("CP1", "CP3")
-    report = (root / result["report"]).read_text()
-    assert "li-1" in report and "BMW Group" in report and "nothing has been sent" in report
-    assert "li-1" in (root / "output" / "ranked_jobs.md").read_text()
-    assert "automatic run" in (root / "data" / "job-desk" / "notes.md").read_text()
+    assert "nothing has been sent" in (root / result["report"]).read_text()
+    s = status(root)
+    assert s["state"] == "done" and s["waiting"] == [] and s["result"]["files"][0]["cv"] == "output/bmw_cv_v1.pdf"
+    assert {line.split("] ")[1].split(":")[0].strip() for line in s["log"]} >= {"CV Writer", "CV Reviewer", "Job Desk"}
+    assert "1 CV written" in (root / "data" / "job-desk" / "notes.md").read_text()
+
+
+def test_declined_jobs_are_not_offered_again(run_world, capsys, monkeypatch):
+    root, calls = run_world
+    run(monkeypatch, capsys, {})
+    result = run(monkeypatch, capsys, {"decline": ["li-1"]})
+    assert result["declined"] == ["li-1"] and status(root)["state"] == "idle" and status(root)["waiting"] == []
+    assert json.loads((root / "data" / "jobs" / "matches" / "li-1.json").read_text())["note"] == pipeline.DECLINED
+    calls.clear()
+    assert run(monkeypatch, capsys, {})["waiting"] == []
+    assert "render" not in [c[0] for c in calls]
+
+
+def test_a_crash_shows_as_failed_in_the_app(run_world, capsys, monkeypatch):
+    root, calls = run_world
+    monkeypatch.setattr(pipeline, "search_run", lambda *a: 1 / 0)
+    monkeypatch.setattr(sys, "argv", ["pipeline", "{}"])
+    with pytest.raises(ZeroDivisionError):
+        pipeline.main()
+    assert status(root)["state"] == "failed" and "ZeroDivisionError" in status(root)["detail"]
     assert not (root / "data" / "jobs" / "pipeline.lock").exists()
 
 
@@ -268,9 +314,7 @@ def test_the_models_german_guess_does_not_block_a_job(run_world, capsys, monkeyp
     def provider(agent, **kw):
         return MockProvider(answers) if agent == "job-matcher" else real_provider(agent, **kw)
     monkeypatch.setattr(A, "provider_for", provider)
-    monkeypatch.setattr(sys, "argv", ["pipeline", "{}"])
-    pipeline.main()
-    assert "render" in [c[0] for c in calls]
+    assert run(monkeypatch, capsys, {})["waiting"] == ["li-1"]
 
 
 def test_german_required_jobs_are_ranked_but_not_written(run_world, capsys, monkeypatch):
@@ -293,10 +337,19 @@ def test_german_required_jobs_are_ranked_but_not_written(run_world, capsys, monk
 
 # ---------- schedule and run now ----------
 
-def test_schedule_runs_every_three_hours_with_the_project_python():
-    p = schedule.plist(3)
-    assert [t["Hour"] for t in p["StartCalendarInterval"]] == [0, 3, 6, 9, 12, 15, 18, 21]
-    assert p["ProgramArguments"][1].endswith("scripts/jobs/pipeline.py") and p["Label"] == schedule.LABEL
+def test_schedule_is_a_setting_the_app_reads(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(schedule, "SETTING", tmp_path / "schedule.json")
+    monkeypatch.setattr(schedule, "DATA", tmp_path)
+    monkeypatch.setattr(schedule, "OLD_PLIST", tmp_path / "missing.plist")
+    for action in ({"action": "install", "every_hours": 3}, {"action": "status"}):
+        monkeypatch.setattr(sys, "argv", ["schedule", json.dumps(action)])
+        schedule.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["installed"] and out["times"] == ["00:00", "03:00", "06:00", "09:00", "12:00", "15:00", "18:00", "21:00"]
+    assert schedule.every_hours() == 3
+    monkeypatch.setattr(sys, "argv", ["schedule", '{"action": "remove"}'])
+    schedule.main()
+    assert schedule.every_hours() is None and not (tmp_path / "schedule.json").exists()
 
 
 def test_run_now_refuses_while_a_run_is_going(tmp_path, monkeypatch, capsys):
@@ -342,12 +395,12 @@ def test_not_internship_jobs_are_skipped_by_the_keyword_check(run_world, capsys,
     assert json.loads((root / "data" / "jobs" / "matches" / "li-1.json").read_text())["reason"] == "keyword check: not_internship"
 
 
-def test_good_matches_from_an_earlier_run_get_their_documents(run_world, capsys, monkeypatch):
+def test_good_matches_from_an_earlier_run_are_offered_again(run_world, capsys, monkeypatch):
     root, calls = run_world
     (root / "data" / "jobs" / "matches").mkdir(parents=True)
     (root / "data" / "jobs" / "matches" / "li-1.json").write_text(json.dumps({**MATCH, "id": "li-1", "title": JOB["title"],
                                                                             "company": "BMW Group", "flags": [], "keyword_score": 70}))
-    monkeypatch.setattr(sys, "argv", ["pipeline", "{}"])
-    pipeline.main()
-    assert "render" in [c[0] for c in calls]
+    assert run(monkeypatch, capsys, {})["waiting"] == ["li-1"]  # offered again, still not written
+    assert "render" not in [c[0] for c in calls]
+    run(monkeypatch, capsys, {"approve": ["li-1"]})
     assert json.loads((root / "data" / "jobs" / "matches" / "li-1.json").read_text())["documents"]["cv"]

@@ -66,3 +66,24 @@ PDFs in output/, status in output/tracker.csv. Job Desk's real notes are still e
 All job-agent data (data/jobs, output/, data/job-desk/notes.md) moved to ~/.Trash/agentfactory-job-data-20261012-1237.
 Kept: inputs/master_cv.pdf, templates, code, specs, the every-3-hours schedule. A scheduled run without a profile
 stops with "No profile yet" until Job Desk step 1 (extract_cv) has run again.
+
+## 2026-10-21: one automatic flow with an OK step; three bugs fixed
+User request: Job Desk "search for jobs" runs everything; only ask before writing CVs; no clicking between agents.
+- Bug 1 (every agent): opening a chat starts a prefill that set the SHARED provider's num_predict to 1; a message
+  sent meanwhile got a one-word reply ("We"). factory/llm.py prefill now uses a copy. Test in test_llm.py.
+- Bug 2 (Job Desk never ran a program from the chat): Ollama 0.32.13's tool parsing stopped qwen3:8b after ~16
+  tokens mid-call and returned an empty reply; the raw output (api/generate raw) was a correct <tool_call> every
+  time. Not the prompt, cache, enum or tool names (bisected). Fix: OllamaProvider(tools_as_text=True), on in
+  make_provider: tools go into the system prompt in the template's own words, calls are read from <tool_call> text
+  (streamed tool-call text is never shown). Live: Job Desk calls run_now at once.
+- Bug 3 (schedule never ran): the LaunchAgent exited 78; macOS blocks background jobs from reading ~/Downloads
+  (confirmed: `ls` there failed "Operation not permitted" under launchd). User chose: the app runs it. schedule.py
+  now writes data/jobs/schedule.json and removed the LaunchAgent; serve.py checks every 30 s (schedule_tick).
+- Flow: pipeline.py {} = search + match, then status "waiting" with the good matches (best max_drafts_per_run
+  ticked); {"approve": [...], "decline": [...]} = documents; declined get note DECLINED and are not offered again.
+  data/jobs/run_status.json drives the Job Desk panel (static/app.js renderRun; /api/jobs/run, /api/jobs/choose,
+  /api/jobs/file limited to output/ .pdf/.md). Job Desk prompt rewritten: never sends the user to another agent.
+- Ollama runs 2 slots on its own (log shows slot 0 and 1) even though OLLAMA_NUM_PARALLEL is gone from the plist.
+- CVs fill the page (user, angrily): render.py fill_page adds left-out master facts (experience bullets, project
+  bullets, other master projects) while the printed PDF stays one page, then prints with .page.fill. All CVs end at
+  816.7 of 841.9 pt. Template self-test unchanged (v6 = v5). Today's 5 CVs re-printed as v2; panel points at v2.

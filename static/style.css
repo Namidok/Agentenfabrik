@@ -394,6 +394,38 @@ kbd {
 .notes-drawer pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--t-sm); }
 
 .cards-drawer { max-height: 16rem; }
+
+/* Job search run: Job Desk's panel above the chat */
+.jobrun { margin: 10px 12px 0; padding: 10px 12px; max-height: 45vh; overflow-y: auto; background: var(--well); box-shadow: inset var(--px) var(--px) 0 0 var(--lo), 0 0 0 var(--px) var(--line); flex: none; }
+.run-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.run-title { min-width: 0; flex: 1 1 14rem; }
+.run-title h3 { margin: 0 0 2px; }
+.run-title p { margin: 0; font-size: var(--t-sm); overflow-wrap: anywhere; }
+.run-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.run-steps { display: flex; gap: 4px; margin: 10px 0 0; padding: 0; list-style: none; flex-wrap: wrap; }
+.run-steps li { display: flex; align-items: center; gap: 6px; padding: 3px 8px; font-size: var(--t-xs); color: var(--ink-2); background: var(--panel); box-shadow: 0 0 0 var(--px) var(--line); }
+.run-steps li .ico { --ico-size: 10px; }
+.run-steps .run-dot { width: 8px; height: 8px; background: var(--agent, var(--accent)); opacity: 0.45; }
+.run-steps li.done { color: var(--ink); }
+.run-steps li.done .run-dot { opacity: 1; }
+.run-steps li.now { color: var(--ink); background: var(--panel-2); box-shadow: 0 0 0 var(--px) var(--agent, var(--accent)); }
+.run-steps li.now .run-dot { opacity: 1; animation: run-pulse 1.2s steps(2) infinite; }
+.run-steps li.ask { color: var(--ink); background: var(--warn-bg); box-shadow: 0 0 0 var(--px) var(--warn); }
+@keyframes run-pulse { 50% { opacity: 0.25; } }
+.run-log { margin-top: 10px; font-size: var(--t-xs); }
+.run-log summary { cursor: pointer; color: var(--ink-2); }
+.run-log pre { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: var(--t-xs)/1.5 var(--mono); }
+.run-jobs { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.run-jobs li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--panel); box-shadow: 0 0 0 var(--px) var(--line); }
+.run-job { display: flex; align-items: flex-start; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
+.run-job input { margin-top: 3px; flex: none; }
+.run-jobs strong { display: block; font-size: var(--t-sm); font-weight: 600; overflow-wrap: anywhere; }
+.run-jobs small { display: block; font-size: var(--t-xs); color: var(--ink-2); overflow-wrap: anywhere; }
+.run-jobs small.warn { color: var(--warn); }
+.run-file > span:first-child { flex: 1; min-width: 0; }
+.run-links { display: flex; gap: 6px; flex: none; }
+.run-note { margin: 8px 0 0; font-size: var(--t-xs); }
+.jobrun .callout { margin-top: 10px; }
 .cards-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .cards-head h3 { margin: 0; }
 .cards-head .check { display: flex; align-items: center; gap: 8px; font-size: var(--t-xs); color: var(--ink-2); cursor: pointer; }

@@ -11,6 +11,8 @@ body {
   -webkit-print-color-adjust: exact; print-color-adjust: exact;
 }
 .page { padding: 27px 39.7px 30px; }
+/* A CV that fills its page: exactly one A4 high, the last free points shared between the sections */
+.page.fill { height: 297mm; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; }
 a { color: #1f3a6b; text-decoration: none; }
 b { font-weight: 700; }
 

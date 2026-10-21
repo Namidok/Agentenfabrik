@@ -13,6 +13,7 @@ Arguments (JSON): {"job_id": "li-123"} (its newest draft) or {"draft": "output/d
 Prints: {"ok", "cv", "cover_letter", "problems", "tracker"} or {"ok": false, "error", "problems"}"""
 from __future__ import annotations
 
+import copy
 import csv
 import json
 import re
@@ -231,6 +232,70 @@ def build_cv(draft: dict, profile: dict, projects: dict | None) -> dict:
             "projects": chosen, "education": profile["education"]}
 
 
+FILL_MARGIN_PT = 26  # the master's bottom padding (30 px) stays free
+
+
+def _key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.replace("**", "").lower()).strip()
+
+
+def page_extras(doc: dict, profile: dict) -> list[tuple]:
+    """True content from the master CV that the tailored CV left out, best first: experience bullets, more bullets
+    of the projects shown, then other master projects (and their further bullets)."""
+    extras: list[tuple] = []
+    for section in ("experience", "projects"):
+        masters = {m["id"]: m for m in profile[section]}
+        for entry in doc[section]:
+            have = {_key(b["text"]) for b in entry["bullets"]}
+            extras += [("bullet", section, entry["id"], b) for b in masters.get(entry["id"], {}).get("bullets", [])
+                       if _key(b["text"]) not in have]
+    shown = {p["id"] for p in doc["projects"]}
+    for m in profile["projects"]:
+        if m["id"] not in shown and m["bullets"]:
+            extras.append(("project", m))
+            extras += [("bullet", "projects", m["id"], b) for b in m["bullets"][1:]]
+    return extras
+
+
+def add_extra(doc: dict, extra: tuple) -> dict | None:
+    """doc with one extra added (a new dict), or None when it cannot be added (its project is not on the page)."""
+    doc = copy.deepcopy(doc)
+    if extra[0] == "project":
+        doc["projects"].append({**extra[1], "bullets": extra[1]["bullets"][:1]})
+        return doc
+    _, section, entry_id, bullet = extra
+    entry = next((e for e in doc[section] if e["id"] == entry_id), None)
+    if entry is None:
+        return None
+    entry["bullets"] = [*entry["bullets"], bullet]
+    return doc
+
+
+def fill_page(doc: dict, profile: dict, html_path: Path, pdf_path: Path) -> tuple[dict, int]:
+    """Print the CV so that it fills its one page: add left-out master content while it still fits (measured in the
+    printed PDF), then share the last free points between the sections. Returns the printed doc and the extras added."""
+    def fits(d: dict) -> tuple[bool, dict]:
+        print_pdf(cv_html(d), html_path, pdf_path)
+        facts = pdf_facts(pdf_path)
+        return facts["pages"] == 1 and facts["last_text_y"] <= facts["page_height"] - FILL_MARGIN_PT, facts
+
+    ok, facts = fits(doc)
+    if not ok:
+        return doc, 0  # too long already: the page check reports it
+    added = 0
+    for extra in page_extras(doc, profile):
+        if facts["page_height"] - FILL_MARGIN_PT - facts["last_text_y"] < 10:
+            break  # less than a line left
+        trial = add_extra(doc, extra)
+        if trial is None:
+            continue
+        trial_ok, trial_facts = fits(trial)
+        if trial_ok:
+            doc, facts, added = trial, trial_facts, added + 1
+    print_pdf(cv_html(doc, fill=True), html_path, pdf_path)
+    return doc, added
+
+
 def build_letter(draft: dict, profile: dict, place: str) -> dict:
     cl = draft["cover_letter"]
     d = date.today()
@@ -300,7 +365,7 @@ def main() -> None:
     place = str(a.get("place") or profile["header"]["contact"][0].split(" (")[0])
     cv_pdf, cl_pdf = OUTPUT / f"{stem}_cv_v{n}.pdf", OUTPUT / f"{stem}_cover_letter_v{n}.pdf"
     try:
-        print_pdf(cv_html(build_cv(draft, profile, projects)), cv_pdf.with_suffix(".html"), cv_pdf)
+        _, filled = fill_page(build_cv(draft, profile, projects), profile, cv_pdf.with_suffix(".html"), cv_pdf)
         print_pdf(letter_html(build_letter(draft, profile, place)), cl_pdf.with_suffix(".html"), cl_pdf)
     except RuntimeError as e:
         fail(str(e))
@@ -316,6 +381,7 @@ def main() -> None:
                                "status": "awaiting approval" if not checks else "check failed", "problems": " | ".join(checks)})
     done({"ok": True, "cv": rel(cv_pdf), "cover_letter": rel(cl_pdf), "html": [rel(cv_pdf.with_suffix(".html")), rel(cl_pdf.with_suffix(".html"))],
           "problems": checks, "warnings": source_warnings(draft, texts)[:8], "tracker": rel(tracker), "repaired": repaired,
+          "added_from_master_cv": filled,
           "next": "Open both PDFs and approve or ask for changes; nothing has been sent." if not checks
                   else "Shorten the draft (fewer or shorter bullets) and render again."})
 

@@ -527,3 +527,74 @@ def test_opening_a_chat_prefills_only_when_a_slot_is_free(client, monkeypatch):
     with client.websocket_connect("ws://127.0.0.1/ws/chat/demo-agent") as ws:
         ws.receive_json()
     assert calls == []
+
+
+# ---------- the job search run ----------
+
+@pytest.fixture
+def jobs(world, monkeypatch):
+    data = world / "data" / "jobs"
+    data.mkdir(parents=True)
+    (world / "output").mkdir()
+    for name, value in (("JOB_STATUS", data / "run_status.json"), ("JOB_LOCK", data / "pipeline.lock"), ("JOB_OUTPUT", world / "output")):
+        monkeypatch.setattr(server, name, value)
+    started = []
+
+    def start(arguments):
+        started.append(arguments)
+        return {"ok": True, "started": True}
+    monkeypatch.setattr(server, "_start_job_run", start)
+    return data, started
+
+
+PAGE = {"X-AgentFactory": "1"}
+
+
+def test_job_run_status_is_idle_before_the_first_run(client, jobs):
+    assert client.get("/api/jobs/run").json() == {"state": "idle"}
+
+
+def test_a_running_job_run_whose_process_died_shows_as_failed(client, jobs):
+    data, _ = jobs
+    (data / "run_status.json").write_text('{"state": "running", "agent": "job-matcher"}')
+    (data / "pipeline.lock").write_text("999999999")
+    status = client.get("/api/jobs/run").json()
+    assert status["state"] == "failed" and "pipeline.log" in status["detail"]
+    (data / "pipeline.lock").write_text(str(__import__("os").getpid()))
+    assert client.get("/api/jobs/run").json()["state"] == "running"
+
+
+def test_job_run_starts_only_from_the_page(client, jobs):
+    _, started = jobs
+    assert client.post("/api/jobs/run").status_code == 403
+    assert client.post("/api/jobs/run", headers=PAGE).json()["started"] and started == [{}]
+
+
+def test_choosing_passes_the_ids_on_and_rejects_anything_else(client, jobs):
+    _, started = jobs
+    ok = client.post("/api/jobs/choose", json={"approve": ["li-1"], "decline": ["li-2"]}, headers=PAGE)
+    assert ok.status_code == 200 and started == [{"approve": ["li-1"], "decline": ["li-2"]}]
+    for bad in ({"approve": ["../../etc"]}, {"approve": "li-1"}, {}):
+        assert client.post("/api/jobs/choose", json=bad, headers=PAGE).status_code == 422
+    assert len(started) == 1
+
+
+def test_job_files_open_only_from_output(client, jobs, world):
+    (world / "output" / "cv_v1.pdf").write_bytes(b"%PDF-1.4")
+    (world / "secret.pdf").write_bytes(b"%PDF-1.4")
+    r = client.get("/api/jobs/file", params={"path": "output/cv_v1.pdf"})
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+    for bad in ("secret.pdf", "output/../secret.pdf", "output/cv_v1.txt", "output/missing.pdf"):
+        assert client.get("/api/jobs/file", params={"path": bad}).status_code == 404
+
+
+def test_the_schedule_starts_at_the_fixed_times_and_once_after_sleep():
+    from datetime import datetime
+    at = lambda h, m=0, d=21: datetime(2026, 10, d, h, m)  # noqa: E731
+    assert server.next_slot(at(11, 40), 3) == at(12) and server.next_slot(at(22, 5), 3) == at(0, d=22)
+    assert server.schedule_tick(at(11, 40), None, at(12)) == (False, None)  # off
+    assert server.schedule_tick(at(11, 40), 3, None) == (False, at(12))  # app opened: no run at once
+    assert server.schedule_tick(at(11, 59), 3, at(12)) == (False, at(12))
+    assert server.schedule_tick(at(12, 0), 3, at(12)) == (True, at(15))
+    assert server.schedule_tick(at(19, 30), 3, at(15)) == (True, at(21))  # slept through 15:00 and 18:00: one run
+    assert server.schedule_tick(at(12, 10), 1, at(15)) == (False, at(13))  # switched to every hour
