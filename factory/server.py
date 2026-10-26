@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from factory import attachments
 from factory.interviewer import SpecBuildError, build_spec, capability_notes, draft_to_spec, permission_warnings, save_spec
 from factory.llm import ProviderError, is_loaded, loaded_models, make_provider, prefill, warm
 from factory.runtime import AgentSession
@@ -768,13 +769,22 @@ async def ws_chat(ws: WebSocket, name: str) -> None:
                 await ws.send_json({"event": "error", "payload": {
                     "message": "The agent is still working on your last message. Wait for it, or press Stop."}})
                 continue
-            text = str(data.get("text", "")).strip()
-            if not text:
+            raw = data.get("text")
+            text = raw.strip() if isinstance(raw, str) else ""
+            try:
+                files = attachments.parse(data.get("attachments"))
+            except attachments.AttachmentError as e:
+                await ws.send_json({"event": "error", "payload": {"message": str(e)}})
+                continue
+            if not text and not files:
                 continue
             if len(text) > MAX_MESSAGE_CHARS:
                 await ws.send_json({"event": "error", "payload": {
                     "message": f"That message is too long (limit {MAX_MESSAGE_CHARS} characters)."}})
                 continue
+            if files:  # attached text files go into the message itself (start and end of a long one)
+                text, _ = attachments.compose(text, files, ROOT / "data" / spec.name / "attachments",
+                                              f"./data/{spec.name}/attachments", can_read=False)
             if spec.mode == "task":  # task agents start fresh for every message
                 try:
                     session = new_session()

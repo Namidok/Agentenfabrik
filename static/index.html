@@ -110,7 +110,10 @@
           </div>
           <section class="jobrun" id="jobrun" aria-label="Job search run" hidden></section>
           <div class="messages-wrap" id="messages-wrap"></div>
+          <div class="attach-list" id="attach-list" aria-label="Files to send" hidden></div>
           <form class="composer" id="composer">
+            <button type="button" class="btn btn-icon" id="attach-btn" aria-label="Attach files" data-tip="Attach one or more text files (code, logs, docs, CSV, JSON). Or drop them here"><i class="ico ico-clip"></i></button>
+            <input type="file" id="attach-input" multiple hidden>
             <label class="sr-only" for="composer-input">Message</label>
             <textarea id="composer-input" rows="1" placeholder="Write a message. Enter sends, Shift+Enter adds a new line."></textarea>
             <button type="submit" class="btn btn-primary" id="send-btn" title="Send the message (Enter)"><i class="ico ico-send"></i><span>Send</span></button>

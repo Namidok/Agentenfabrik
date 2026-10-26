@@ -162,3 +162,16 @@ button.hud-chip:active { transform: translateY(var(--px)); }
   .dock button span { display: none; }
   .dock button { min-height: 44px; }
 }
+
+/* ---------- attachments ---------- */
+
+.attach-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 12px 0; }
+.attach-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 4px 4px 8px; font-size: var(--t-xs);
+  background: var(--panel-2); box-shadow: 0 0 0 var(--px) var(--line);
+}
+.attach-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.attach-chip button { flex: none; }
+.msg.user .msg-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.msg.user .msg-files span { display: inline-flex; gap: 4px; align-items: center; font-size: var(--t-xs); opacity: 0.85; overflow-wrap: anywhere; }
+.chat.is-dropping .messages-wrap { outline: calc(2 * var(--px)) dashed var(--accent); outline-offset: -6px; }

@@ -20,7 +20,8 @@ def main() -> int:
     if "--no-browser" not in sys.argv:
         threading.Timer(1.2, webbrowser.open, args=(url,)).start()
     print(f"AgentFactory is running at {url}  (press Ctrl+C to stop)")
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    # ws_max_size: one chat message with its attachments (at most 5 text files) fits in 1 MB
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning", ws_max_size=1024 * 1024)
     return 0
 
 

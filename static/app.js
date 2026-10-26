@@ -507,6 +507,7 @@
     const chat = {
       agent: agent.name, view, ws: null, open: false, busy: false, status: "idle", stick: true, unseen: false,
       outbox: [], typing: null, starters: null, draft: "", runTokens: 0, steps: 0, turnTools: [], stopping: false, lastRun: null,
+      pending: [], // files attached to the next message: { name, size, content }
     };
     view.addEventListener("scroll", () => {
       chat.stick = view.scrollHeight - view.scrollTop - view.clientHeight < 60;
@@ -521,8 +522,9 @@
     scrollDown(chat);
   }
 
-  function addUser(chat, text) {
-    chat.view.append(el("div", { class: "msg user" }, el("p", { text })));
+  function addUser(chat, text, files = []) {
+    chat.view.append(el("div", { class: "msg user" }, text ? el("p", { text }) : null,
+      files.length ? el("div", { class: "msg-files", "aria-label": "Attached files" }, files.map((f) => el("span", { title: kb(f.size) }, icon("file"), f.name))) : null));
     scrollDown(chat, true);
   }
 
@@ -674,7 +676,7 @@
     ws.addEventListener("open", () => {
       if (chat.ws !== ws) return;
       chat.open = true;
-      for (const text of chat.outbox.splice(0)) ws.send(JSON.stringify({ type: "message", text }));
+      for (const payload of chat.outbox.splice(0)) ws.send(JSON.stringify(payload));
     });
     ws.addEventListener("message", (event) => {
       if (chat.ws !== ws) return;
@@ -790,16 +792,60 @@
 
   function sendMessage(chat, text) {
     text = String(text).trim();
-    if (!text || chat.busy) return;
+    if ((!text && !chat.pending.length) || chat.busy) return;
+    const files = chat.pending.splice(0);
     if (chat.starters) { chat.starters.remove(); chat.starters = null; }
-    addUser(chat, text);
+    addUser(chat, text, files);
+    if (chat === currentChat()) renderPending();
     beginTurn(chat);
+    const payload = { type: "message", text };
+    if (files.length) payload.attachments = files.map((f) => ({ name: f.name, content: f.content }));
     if (chat.ws && chat.open) {
-      chat.ws.send(JSON.stringify({ type: "message", text }));
+      chat.ws.send(JSON.stringify(payload));
     } else {
-      chat.outbox.push(text);
+      chat.outbox.push(payload);
       if (!chat.ws) connect(chat);
     }
+  }
+
+  // ---------- attachments: text files sent with the next message ----------
+
+  const ATTACH = { files: 5, fileBytes: 400_000, totalBytes: 600_000 };
+  const kb = (n) => (n < 1024 ? `${n} B` : `${Math.round(n / 102.4) / 10} KB`);
+
+  async function addFiles(chat, list) {
+    if (!chat || chat.busy) return;
+    for (const file of list) {
+      if (chat.pending.length >= ATTACH.files) { toast("Too many files", `Attach at most ${ATTACH.files} files to one message.`, "warn"); break; }
+      if (file.size > ATTACH.fileBytes) {
+        toast("File too large", `${file.name} is ${kb(file.size)}; the limit is ${kb(ATTACH.fileBytes)}. Attach the part that matters, or put the file in a folder the agent may read.`, "warn");
+        continue;
+      }
+      if (chat.pending.reduce((n, f) => n + f.size, 0) + file.size > ATTACH.totalBytes) {
+        toast("Too much at once", `Attach at most ${kb(ATTACH.totalBytes)} to one message.`, "warn");
+        continue;
+      }
+      let content = "";
+      try { content = await file.text(); } catch { toast("Could not read the file", file.name, "bad"); continue; }
+      const head = content.slice(0, 8000);
+      if (head.includes("\u0000") || head.startsWith("%PDF") || (head.match(/\uFFFD/g) || []).length > head.length / 20) {
+        toast("Not a text file", `${file.name} is not text. Attach code, logs, Markdown, CSV, JSON or other text files.`, "warn");
+        continue;
+      }
+      chat.pending.push({ name: file.name, size: file.size, content });
+    }
+    if (chat === currentChat()) renderPending();
+  }
+
+  function renderPending() {
+    const chat = currentChat();
+    const files = chat ? chat.pending : [];
+    const box = $("attach-list");
+    box.hidden = !files.length;
+    box.replaceChildren(...files.map((f, i) => el("span", { class: "attach-chip", title: `${f.name}, ${kb(f.size)}` }, icon("file"),
+      el("span", { text: `${f.name} · ${kb(f.size)}` }),
+      el("button", { type: "button", class: "btn btn-sm btn-icon btn-quiet", "aria-label": `Remove ${f.name}`,
+        onclick: () => { chat.pending.splice(i, 1); renderPending(); } }, icon("close")))));
   }
 
   function stopTurn() {
@@ -957,6 +1003,7 @@
     $("stop-btn").querySelector("span").textContent = chat && chat.stopping ? "Stopping" : "Stop";
     $("send-btn").disabled = !chat || blocked;
     $("composer-input").disabled = !chat || blocked;
+    $("attach-btn").disabled = !chat || blocked || !!(chat && chat.busy);
     const note = $("composer-note");
     note.hidden = !problem;
     note.textContent = problem ? `${problem.title}. ${problem.text}` : "";
@@ -980,6 +1027,8 @@
     }
     chat.view.replaceChildren();
     chat.outbox = [];
+    chat.pending = [];
+    renderPending();
     chat.typing = null;
     chat.lastRun = null;
     chat.summarized = false;
@@ -1017,6 +1066,7 @@
     renderRun();
     renderRoster();
     $("composer-input").value = chat.draft;
+    renderPending();
     autosize();
     updateComposer();
     updateJump();
@@ -1442,7 +1492,7 @@
     if (!chat || chat.busy) return;
     const input = $("composer-input");
     const text = input.value;
-    if (!text.trim()) return;
+    if (!text.trim() && !chat.pending.length) return;
     input.value = "";
     autosize();
     sendMessage(chat, text);
@@ -1467,6 +1517,21 @@
   $("close-chat").addEventListener("click", () => { closeChatMenu(); closeNotes(); deselect(); $("office").focus(); });
   $("refresh-agents").addEventListener("click", () => { loadConfig(); loadAgents(); });
   $("new-agent-btn").addEventListener("click", () => Nova.hire());
+  $("attach-btn").addEventListener("click", () => $("attach-input").click());
+  $("attach-input").addEventListener("change", (event) => { addFiles(currentChat(), [...event.target.files]); event.target.value = ""; });
+  const chatBox = $("chat-section");
+  const hasFiles = (event) => [...((event.dataTransfer && event.dataTransfer.types) || [])].includes("Files");
+  chatBox.addEventListener("dragover", (event) => { if (hasFiles(event) && currentChat()) { event.preventDefault(); chatBox.classList.add("is-dropping"); } });
+  chatBox.addEventListener("dragleave", (event) => { if (!chatBox.contains(event.relatedTarget)) chatBox.classList.remove("is-dropping"); });
+  chatBox.addEventListener("drop", (event) => {
+    chatBox.classList.remove("is-dropping");
+    if (!hasFiles(event)) return;
+    event.preventDefault();
+    addFiles(currentChat(), [...event.dataTransfer.files]);
+  });
+  // a file dropped anywhere else must not make the browser leave the page
+  window.addEventListener("dragover", (event) => { if (hasFiles(event)) event.preventDefault(); });
+  window.addEventListener("drop", (event) => { if (hasFiles(event)) event.preventDefault(); });
   $("empty-hire").addEventListener("click", () => Nova.hire());
   $("empty-nova-btn").addEventListener("click", () => Nova.menu());
   document.addEventListener("agentfactory:hired", (event) => {
