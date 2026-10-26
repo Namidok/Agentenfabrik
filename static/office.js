@@ -39,7 +39,7 @@
     { id: "ext3", kind: "stand", x: 420, y: 258, exit: { x: 420, y: 258 }, grp: "south" },
   ];
   const SAYINGS = {
-    sit: ["NICE BREAK", "AHH...", "LONG DAY?"], nap: ["ZZZ"], coffee: ["MMM, COFFEE", "NEED CAFFEINE"],
+    sit: ["NICE BREAK", "AHH...", "LONG DAY?"], nap: ["NAP TIME", "SO SLEEPY..."], coffee: ["MMM, COFFEE", "NEED CAFFEINE"],
     arcade: ["GG!", "ONE MORE ROUND", "NEW HIGH SCORE!"], stand: ["HMM...", "ANY NEWS?", "STRETCH TIME"],
   };
 
@@ -993,6 +993,6 @@
     cycleTime,
     getTime() { return { theme: env.theme, label: env.label, preview: S.PRESETS[presetIndex].hour != null ? S.PRESETS[presetIndex].name : null }; },
     isWalking: () => [...agents.values()].some((a) => a.walker),
-    where(name) { const a = agents.get(name); return a ? { place: a.place, spot: a.spotId, x: Math.round(a.x), y: Math.round(a.y) } : null; },
+    where(name) { const a = agents.get(name); return a ? { place: a.place, spot: a.spotId, label: placeWord(a), x: Math.round(a.x), y: Math.round(a.y) } : null; },
   };
 })();

@@ -59,6 +59,10 @@ python3 -m venv .venv
 .venv/bin/python serve.py          # opens http://127.0.0.1:8010
 ```
 
+The commands call `.venv/bin/python` directly, so you never have to activate the venv. To type plain `python`
+instead, run `source .venv/bin/activate` (not `.venv/bin/activate` on its own, which fails with "permission denied").
+VS Code activates it in new terminals through `.vscode/settings.json`.
+
 For the job agents also:
 - put your CV at `inputs/master_cv.pdf`;
 - install Google Chrome (it prints the CV and letter PDFs);

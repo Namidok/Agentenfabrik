@@ -884,8 +884,9 @@
       ico = problem.soft ? "warn" : "alert"; cls = "is-bad"; text = problem.title;
     } else {
       const where = Office.where(chat.agent);
-      if (where && where.place === "lounge") { ico = "coffee"; text = "Resting in the lounge"; }
-      else if (where && where.place === "walking") { ico = "desk"; text = "Walking to their desk"; }
+      // same words as the office tooltip, so the two never disagree
+      if (where && where.place === "lounge") { ico = "coffee"; text = where.label; }
+      else if (where && where.place === "walking") { ico = "desk"; text = where.label; }
     }
     $("chat-state").className = `chat-state ${cls}`;
     $("chat-state-icon").className = `ico ico-${ico}`;
